@@ -1,0 +1,41 @@
+name: Telegram Parser
+
+on:
+  schedule:
+    # Запуск каждые 30 минут
+    - cron: '*/30 * * * *'
+  workflow_dispatch:  # Ручной запуск
+
+jobs:
+  parse:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    
+    - name: Install dependencies
+      run: |
+        pip install telethon python-dotenv httpx
+    
+    - name: Run parser
+      env:
+        API_ID: ${{ secrets.API_ID }}
+        API_HASH: ${{ secrets.API_HASH }}
+        PHONE_NUMBER: ${{ secrets.PHONE_NUMBER }}
+        CHANNEL_ID: ${{ secrets.CHANNEL_ID }}
+        PASSWORD: ${{ secrets.PASSWORD }}
+      run: |
+        python parser.py
+    
+    - name: Upload posts to artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: posts
+        path: posts/
+        retention-days: 7
