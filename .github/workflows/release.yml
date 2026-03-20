@@ -1,0 +1,27 @@
+name: Create Release
+
+on:
+  workflow_run:
+    workflows: ["Telegram Parser"]
+    types:
+      - completed
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    
+    steps:
+    - name: Download artifacts
+      uses: actions/download-artifact@v4
+      with:
+        name: posts
+        path: posts
+    
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: latest
+        name: Latest Posts
+        files: posts/
+        body: "Автоматически собранные посты из Telegram"
