@@ -7,6 +7,7 @@ import logging
 import time
 import json
 import hashlib
+import random
 from pathlib import Path
 from datetime import datetime
 from browser_manager import BrowserManager
@@ -22,10 +23,13 @@ POSTS_DIR = Path("posts")
 PUBLISHED_DIR = Path("published")
 STATE_FILE = Path("publisher_state.json")
 
-# Куки для авторизации (берутся из секретов GitHub)
+# Куки для авторизации
 USER_HASH = os.getenv('USER_HASH')
 UUK = os.getenv('UUK')
-USER_ID = '2368040'  # Ваш ID на 9111.ru
+USER_ID = '2368040'
+
+# Количество последних постов для публикации
+MAX_POSTS_TO_PUBLISH = 3
 # ===============================
 
 PUBLISHED_DIR.mkdir(exist_ok=True)
@@ -38,25 +42,40 @@ def load_state():
                 return json.load(f)
         except:
             pass
-    return {"published": []}
+    return {"published": [], "last_run": None}
 
 def save_state(title):
     """Сохраняет опубликованный заголовок"""
     state = load_state()
+    title_hash = hashlib.md5(title.encode('utf-8')).hexdigest()
+    
+    # Проверяем, не публиковали ли уже этот заголовок
+    for item in state["published"]:
+        if item.get("hash") == title_hash:
+            return
+    
     state["published"].append({
         "title": title,
-        "hash": hashlib.md5(title.encode()).hexdigest(),
+        "hash": title_hash,
         "date": datetime.now().isoformat()
     })
+    
+    # Оставляем только последние 500 записей
+    if len(state["published"]) > 500:
+        state["published"] = state["published"][-500:]
+    
+    state["last_run"] = datetime.now().isoformat()
+    
     with open(STATE_FILE, 'w', encoding='utf-8') as f:
         json.dump(state, f, ensure_ascii=False, indent=2)
 
 def is_published(title):
     """Проверяет, был ли заголовок уже опубликован"""
     state = load_state()
-    h = hashlib.md5(title.encode()).hexdigest()
+    title_hash = hashlib.md5(title.encode('utf-8')).hexdigest()
     for item in state["published"]:
-        if item.get("hash") == h:
+        if item.get("hash") == title_hash:
+            logger.info(f"   ⏭️ Заголовок уже публиковался {item.get('date', '')}")
             return True
     return False
 
@@ -64,7 +83,7 @@ def parse_post(post_folder):
     """Читает пост из папки"""
     text_file = post_folder / "text.txt"
     if not text_file.exists():
-        return None, None
+        return None, None, None
     
     with open(text_file, 'r', encoding='utf-8') as f:
         content = f.read()
@@ -114,9 +133,13 @@ def generate_tags(text):
         tags.append("энергетика")
     return ", ".join(list(dict.fromkeys(tags))[:5])
 
+def random_delay(min_sec=2, max_sec=5):
+    """Случайная задержка"""
+    time.sleep(random.uniform(min_sec, max_sec))
+
 def main():
     print("=" * 60)
-    print("🚀 ПУБЛИКАТОР Local Pub (с обходом блокировок)")
+    print("🚀 ПУБЛИКАТОР Local Pub (с проверкой уникальности)")
     print("=" * 60)
     
     # Проверяем наличие кук
@@ -126,6 +149,7 @@ def main():
         sys.exit(1)
     
     logger.info(f"🆔 ID пользователя: {USER_ID}")
+    logger.info(f"📊 Максимум постов за запуск: {MAX_POSTS_TO_PUBLISH}")
     
     # Поиск постов
     posts = [f for f in POSTS_DIR.iterdir() if f.is_dir()]
@@ -133,36 +157,44 @@ def main():
         logger.info("❌ Нет постов для публикации")
         return
     
-    logger.info(f"📊 Найдено: {len(posts)} постов")
-    posts.sort(key=lambda x: x.stat().st_ctime)
+    # Сортируем по дате создания (новые последние)
+    posts.sort(key=lambda x: x.stat().st_ctime, reverse=True)
     
-    # Запускаем браузер через BrowserManager
+    # Берем только последние MAX_POSTS_TO_PUBLISH постов
+    posts_to_publish = posts[:MAX_POSTS_TO_PUBLISH]
+    
+    logger.info(f"📊 Всего постов: {len(posts)}")
+    logger.info(f"📊 К публикации: {len(posts_to_publish)} (последние {MAX_POSTS_TO_PUBLISH})")
+    
+    # Запускаем браузер
     browser = BrowserManager(
         user_hash=USER_HASH,
         uuk=UUK,
         user_id=USER_ID,
-        headless=True  # Фоновый режим
+        headless=True
     )
     
     if not browser.start():
         logger.error("❌ Не удалось запустить браузер")
         sys.exit(1)
     
-    # Вход через куки (обход блокировок)
+    # Вход через куки
     if not browser.login():
         logger.error("❌ Не удалось авторизоваться")
         browser.stop()
         sys.exit(1)
     
     logger.info("✅ Авторизация успешна, начинаем публикацию...")
+    random_delay(3, 5)
     
     try:
         success = 0
         fail = 0
         skipped = 0
+        new_posts = 0
         
-        for i, folder in enumerate(posts, 1):
-            print(f"\n📌 Пост {i}/{len(posts)}: {folder.name}")
+        for i, folder in enumerate(posts_to_publish, 1):
+            print(f"\n📌 Пост {i}/{len(posts_to_publish)}: {folder.name}")
             
             # Читаем пост
             title, text, image = parse_post(folder)
@@ -171,9 +203,9 @@ def main():
                 fail += 1
                 continue
             
-            # Проверка на дубликат
+            # Проверка на дубликат (уникальность)
             if is_published(title):
-                logger.info("   ⏭️ Заголовок уже опубликован, пропускаем")
+                logger.info(f"   ⏭️ Заголовок уже был опубликован, пропускаем")
                 skipped += 1
                 continue
             
@@ -185,6 +217,7 @@ def main():
             if browser.publish_post(title, text):
                 logger.info("   ✅ Опубликовано!")
                 success += 1
+                new_posts += 1
                 save_state(title)
                 # Перемещаем в опубликованные
                 dest = PUBLISHED_DIR / folder.name
@@ -194,18 +227,23 @@ def main():
                 fail += 1
             
             # Случайная пауза между постами
-            if i < len(posts):
-                import random
+            if i < len(posts_to_publish):
                 delay = random.randint(45, 90)
                 print(f"⏳ Пауза {delay} сек...")
                 time.sleep(delay)
         
         print(f"\n{'='*60}")
         print(f"📊 ИТОГИ:")
-        print(f"   ✅ Успешно: {success}")
+        print(f"   ✅ Успешно опубликовано: {success}")
         print(f"   ⏭️ Пропущено (дубликаты): {skipped}")
         print(f"   ❌ Ошибок: {fail}")
+        print(f"   📁 Всего обработано: {len(posts_to_publish)}")
         print(f"{'='*60}")
+        
+        if new_posts > 0:
+            logger.info(f"🎉 Опубликовано {new_posts} новых уникальных постов!")
+        else:
+            logger.info("📭 Новых уникальных постов не найдено")
         
     except Exception as e:
         logger.error(f"❌ Ошибка: {e}")
