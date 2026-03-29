@@ -11,11 +11,7 @@ env/
 ENV/
 
 # Session files
-*.session
-*.session-journal
-
 # Data files
-data/posts/
 !data/.gitkeep
 
 # Environment variables
