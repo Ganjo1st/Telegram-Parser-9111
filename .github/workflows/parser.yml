@@ -1,22 +1,16 @@
 name: Telegram Parser
 
 on:
-  # Случайный запуск в разное время (имитация человека)
   schedule:
-    - cron: '0 3-23/3 * * *'  # Каждые 3 часа с 3 до 23
-  # Ручной запуск для тестирования
+    - cron: '0 */6 * * *'  # Каждые 6 часов
   workflow_dispatch:
 
 jobs:
   parse:
     runs-on: ubuntu-latest
-    # Случайный runner для разных IP
-    strategy:
-      matrix:
-        runner: [ubuntu-latest]
     
     steps:
-    - name: Checkout repository
+    - name: Checkout
       uses: actions/checkout@v4
     
     - name: Set up Python
@@ -26,7 +20,7 @@ jobs:
     
     - name: Install dependencies
       run: |
-        pip install telethon python-dotenv httpx
+        pip install -r requirements.txt
     
     - name: Run parser
       env:
@@ -38,9 +32,10 @@ jobs:
       run: |
         python parser.py
     
-    - name: Upload posts
-      uses: actions/upload-artifact@v4
-      with:
-        name: posts
-        path: posts/
-        retention-days: 7
+    - name: Commit and push posts
+      run: |
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        git add data/posts/
+        git diff --quiet && git diff --staged --quiet || git commit -m "Update posts $(date +'%Y-%m-%d')"
+        git push
