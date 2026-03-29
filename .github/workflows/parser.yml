@@ -1,0 +1,46 @@
+name: Telegram Parser
+
+on:
+  # Случайный запуск в разное время (имитация человека)
+  schedule:
+    - cron: '0 3-23/3 * * *'  # Каждые 3 часа с 3 до 23
+  # Ручной запуск для тестирования
+  workflow_dispatch:
+
+jobs:
+  parse:
+    runs-on: ubuntu-latest
+    # Случайный runner для разных IP
+    strategy:
+      matrix:
+        runner: [ubuntu-latest]
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    
+    - name: Install dependencies
+      run: |
+        pip install telethon python-dotenv httpx
+    
+    - name: Run parser
+      env:
+        API_ID: ${{ secrets.API_ID }}
+        API_HASH: ${{ secrets.API_HASH }}
+        PHONE_NUMBER: ${{ secrets.PHONE_NUMBER }}
+        CHANNEL_ID: ${{ secrets.CHANNEL_ID }}
+        PASSWORD: ${{ secrets.PASSWORD }}
+      run: |
+        python parser.py
+    
+    - name: Upload posts
+      uses: actions/upload-artifact@v4
+      with:
+        name: posts
+        path: posts/
+        retention-days: 7
