@@ -1,5 +1,9 @@
-telethon
-python-dotenv
-httpx
-selenium
-webdriver-manager
+telethon==1.42.0
+python-dotenv==1.2.2
+httpx==0.28.1
+selenium==4.41.0
+webdriver-manager==4.0.2
+fake-useragent==1.5.1
+requests==2.33.0
+beautifulsoup4==4.13.4
+lxml==5.4.0
