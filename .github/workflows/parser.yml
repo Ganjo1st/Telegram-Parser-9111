@@ -18,13 +18,6 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 1
       
-      - name: Checkout Proctor repository (for session)
-        uses: actions/checkout@v4
-        with:
-          repository: Ganjo1st/Proctor
-          path: proctor_temp
-          fetch-depth: 1
-      
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -52,5 +45,5 @@ jobs:
           git config --local user.name "github-actions[bot]"
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git add data/posts/ data/last_id.txt sessions/
-          git diff --quiet && git diff --staged --quiet || git commit -m "Update posts $(date +'%Y-%m-%d %H:%M:%S')"
+          git diff --quiet && git diff --staged --quiet || git commit -m "Update posts $(date +'%Y-%m-%d %H:%M:%S')" || true
           git push
