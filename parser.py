@@ -1,3 +1,6 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
 import os
 import re
 import asyncio
@@ -6,7 +9,6 @@ import json
 import hashlib
 import shutil
 import random
-import time
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, List, Dict, Any, Tuple
@@ -27,27 +29,23 @@ API_ID = int(os.getenv('API_ID', 0))
 API_HASH = os.getenv('API_HASH', '')
 PASSWORD = os.getenv('PASSWORD', '')
 
-POSTS_DIR = Path("posts")
+# Папки для сохранения (в репозитории)
+POSTS_DIR = Path("data/posts")
 STATE_FILE = Path("parser_state.json")
 HASH_DB_FILE = Path("message_hashes.json")
 
 MAX_MESSAGES = 10
 MAX_RETRIES = 3
 
-# Файлы с прокси в порядке приоритета (ИМЕННО ИЗ ВАШИХ ФАЙЛОВ)
-PROXY_FILES = [
-    "proxies_russia.txt",   # Сначала российские
-    "proxies_global.txt",   # Потом глобальные
-]
-
-# URL для скачивания прокси
+# Файлы с прокси (опционально)
+PROXY_FILES = ["proxies_russia.txt", "proxies_global.txt"]
 PROXY_URLS = {
     "proxies_russia.txt": "https://raw.githubusercontent.com/Ganjo1st/Proctor/main/data/proxies_russia.txt",
     "proxies_global.txt": "https://raw.githubusercontent.com/Ganjo1st/Proctor/main/data/proxies_global.txt",
 }
 
 # Создаем папки
-POSTS_DIR.mkdir(exist_ok=True)
+POSTS_DIR.mkdir(parents=True, exist_ok=True)
 
 # Настройка логирования
 logging.basicConfig(
@@ -58,11 +56,11 @@ logger = logging.getLogger(__name__)
 # ===============================
 
 def random_delay(min_sec=0.5, max_sec=2):
-    """Случайная задержка (имитация человека)"""
+    """Случайная задержка"""
     time.sleep(random.uniform(min_sec, max_sec))
 
 def download_proxy_files():
-    """Скачивает файлы с прокси из репозитория Proctor"""
+    """Скачивает файлы с прокси"""
     for filename, url in PROXY_URLS.items():
         try:
             response = httpx.get(url, timeout=15)
@@ -70,8 +68,6 @@ def download_proxy_files():
                 with open(filename, 'w', encoding='utf-8') as f:
                     f.write(response.text)
                 logger.info(f"✅ Скачан файл прокси: {filename}")
-            else:
-                logger.warning(f"⚠️ Не удалось скачать {filename}: статус {response.status_code}")
         except Exception as e:
             logger.error(f"❌ Ошибка скачивания {filename}: {e}")
 
@@ -83,14 +79,9 @@ def load_proxies_from_file(filename: str) -> List[str]:
             with open(filename, 'r', encoding='utf-8') as f:
                 for line in f:
                     line = line.strip()
-                    # Пропускаем комментарии и пустые строки
                     if line and not line.startswith('#'):
                         if ':' in line:
                             proxies.append(line)
-            if proxies:
-                logger.info(f"📥 Загружено {len(proxies)} прокси из {filename}")
-            else:
-                logger.warning(f"⚠️ В файле {filename} нет прокси")
     except Exception as e:
         logger.error(f"❌ Ошибка чтения {filename}: {e}")
     return proxies
@@ -102,7 +93,6 @@ async def test_proxy(proxy: str, timeout: int = 15) -> bool:
         proxy_url = proxy
         if not proxy_url.startswith(('http://', 'socks5://')):
             proxy_url = f"http://{proxy_url}"
-        
         transport = httpx.HTTPTransport(proxy=proxy_url)
         async with httpx.AsyncClient(transport=transport, timeout=timeout) as client:
             response = await client.get("https://api.telegram.org")
@@ -111,35 +101,18 @@ async def test_proxy(proxy: str, timeout: int = 15) -> bool:
         return False
 
 async def get_working_proxy() -> Optional[str]:
-    """Проверяет файлы с прокси по порядку и возвращает первый рабочий"""
-    
-    # Скачиваем свежие файлы
+    """Возвращает первый рабочий прокси"""
     download_proxy_files()
     
-    # Проверяем файлы в порядке приоритета
     for filename in PROXY_FILES:
-        logger.info(f"🔍 Проверяем файл: {filename}")
-        
         proxies = load_proxies_from_file(filename)
-        
         if not proxies:
-            logger.warning(f"⚠️ В файле {filename} нет прокси, переходим к следующему")
             continue
-        
-        # Перемешиваем прокси для хаотичности
         random.shuffle(proxies)
-        
-        # Проверяем первые 5 прокси
         for proxy in proxies[:5]:
-            logger.info(f"   Проверяем прокси: {proxy}")
             if await test_proxy(proxy):
-                logger.info(f"   ✅ Найден рабочий прокси из {filename}: {proxy}")
+                logger.info(f"✅ Найден рабочий прокси: {proxy}")
                 return proxy
-            logger.warning(f"   ❌ Прокси не работает: {proxy}")
-        
-        logger.warning(f"⚠️ В файле {filename} нет рабочих прокси, переходим к следующему")
-    
-    logger.warning("❌ Нет рабочих прокси ни в одном файле. Работаем без прокси.")
     return None
 
 def load_state() -> Dict[str, Any]:
@@ -176,7 +149,6 @@ def save_hash_db(message_id: int, content_hash: str):
     try:
         db = load_hash_db()
         db["messages"][str(message_id)] = {"hash": content_hash, "date": datetime.now().isoformat()}
-        # Ограничиваем размер базы
         if len(db["messages"]) > 500:
             items = sorted(db["messages"].items(), key=lambda x: x[1].get("date", ""))
             for old_key, _ in items[:200]:
@@ -196,8 +168,9 @@ def calculate_hash(text: str) -> str:
     return hashlib.md5(text[:200].encode('utf-8')).hexdigest()
 
 def clean_filename(text: str, max_length: int = 50) -> str:
-    """Очищает имя папки от эмодзи"""
+    """Очищает имя папки"""
     import re
+    # Удаляем эмодзи
     emoji_pattern = re.compile("["
         u"\U0001F600-\U0001F64F"
         u"\U0001F300-\U0001F5FF"
@@ -223,7 +196,6 @@ async def download_media(client: TelegramClient, message: Message, save_dir: Pat
         try:
             if not message.media:
                 return None
-            
             ext = '.jpg'
             if hasattr(message.media, 'document'):
                 doc = message.media.document
@@ -231,7 +203,6 @@ async def download_media(client: TelegramClient, message: Message, save_dir: Pat
                     if hasattr(attr, 'file_name'):
                         ext = Path(attr.file_name).suffix
                         break
-            
             filepath = save_dir / f"image{ext}"
             downloaded = await client.download_media(message, file=str(filepath))
             if downloaded and Path(downloaded).exists() and Path(downloaded).stat().st_size > 0:
@@ -241,7 +212,6 @@ async def download_media(client: TelegramClient, message: Message, save_dir: Pat
             logger.warning(f"   ⚠️ Ошибка (попытка {attempt}): {e}")
             if attempt < MAX_RETRIES:
                 await asyncio.sleep(random.uniform(attempt * 1.5, attempt * 3))
-    logger.error(f"   ❌ Не удалось скачать")
     return None
 
 async def process_message(client: TelegramClient, message: Message, channel_title: str) -> Tuple[bool, Optional[Path]]:
@@ -267,7 +237,7 @@ async def process_message(client: TelegramClient, message: Message, channel_titl
         if post_folder.exists():
             return False, None
         
-        post_folder.mkdir()
+        post_folder.mkdir(parents=True, exist_ok=True)
         logger.info(f"   📁 Папка: {folder_name}")
         
         with open(post_folder / "text.txt", 'w', encoding='utf-8') as f:
@@ -311,37 +281,22 @@ async def main():
         logger.error("❌ Не указан CHANNEL_ID")
         return
     
-    # Случайная задержка перед началом
-    await asyncio.sleep(random.uniform(1, 3))
+    # Проверяем наличие сессии
+    session_file = Path('telegram_session.session')
+    if not session_file.exists():
+        logger.error("❌ Файл сессии не найден! Запустите парсер локально для создания сессии")
+        logger.info("   После создания добавьте telegram_session.session в репозиторий")
+        return
     
-    # Получаем рабочий прокси
-    proxy = await get_working_proxy()
+    logger.info("🔑 Используем сохраненную сессию")
     
-    # Настройки прокси
-    proxy_config = None
-    if proxy:
-        if proxy.startswith('socks5://'):
-            parts = proxy.replace('socks5://', '').split(':')
-            if len(parts) == 2:
-                proxy_config = ('socks5', parts[0], int(parts[1]))
-                logger.info(f"🔌 Используем SOCKS5 прокси: {proxy}")
-        else:
-            parts = proxy.replace('http://', '').split(':')
-            if len(parts) == 2:
-                proxy_config = ('http', parts[0], int(parts[1]))
-                logger.info(f"🔌 Используем HTTP прокси: {proxy}")
-    else:
-        logger.info("🔌 Работаем без прокси")
+    # Прокси не нужны
+    proxy = None
     
-    client = TelegramClient('telegram_session', API_ID, API_HASH, proxy=proxy_config)
+    client = TelegramClient('telegram_session', API_ID, API_HASH, proxy=proxy)
     
     try:
-        logger.info(f"📱 Подключаемся...")
-        
-        await client.start(
-            phone=PHONE_NUMBER,
-            password=PASSWORD if PASSWORD else None
-        )
+        await client.start()
         
         me = await client.get_me()
         logger.info(f"✅ Подключены как: {me.first_name}")
@@ -373,7 +328,6 @@ async def main():
                 processed += 1
                 if msg.id > new_last_id:
                     new_last_id = msg.id
-            
             await asyncio.sleep(random.uniform(0.5, 1.5))
         
         if new_last_id > last_id:
