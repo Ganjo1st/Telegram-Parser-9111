@@ -8,6 +8,9 @@ on:
       - completed
   # Ручной запуск
   workflow_dispatch:
+  # Запуск по расписанию (каждые 3 часа)
+  schedule:
+    - cron: '0 */3 * * *'
 
 jobs:
   publish:
@@ -22,6 +25,8 @@ jobs:
       with:
         name: posts
         path: posts/
+        # Если артефакт не найден, не ошибка
+        if-no-files-found: ignore
     
     - name: Set up Python
       uses: actions/setup-python@v5
@@ -34,8 +39,8 @@ jobs:
     
     - name: Run publisher
       env:
-        LOGIN_EMAIL: ${{ secrets.LOGIN_EMAIL }}
-        LOGIN_PASSWORD: ${{ secrets.LOGIN_PASSWORD }}
+        USER_HASH: ${{ secrets.USER_HASH }}
+        UUK: ${{ secrets.UUK }}
       run: |
         python publisher.py
     
