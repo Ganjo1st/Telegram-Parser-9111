@@ -34,11 +34,17 @@ HASH_DB_FILE = Path("message_hashes.json")
 MAX_MESSAGES = 10
 MAX_RETRIES = 3
 
-# Файлы с прокси в порядке приоритета
+# Файлы с прокси в порядке приоритета (ИМЕННО ИЗ ВАШИХ ФАЙЛОВ)
 PROXY_FILES = [
-    "proxies_russia.txt",
-    "proxies_global.txt",
+    "proxies_russia.txt",   # Сначала российские
+    "proxies_global.txt",   # Потом глобальные
 ]
+
+# URL для скачивания прокси
+PROXY_URLS = {
+    "proxies_russia.txt": "https://raw.githubusercontent.com/Ganjo1st/Proctor/main/data/proxies_russia.txt",
+    "proxies_global.txt": "https://raw.githubusercontent.com/Ganjo1st/Proctor/main/data/proxies_global.txt",
+}
 
 # Создаем папки
 POSTS_DIR.mkdir(exist_ok=True)
@@ -51,18 +57,13 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 # ===============================
 
-def random_delay(min_sec=1, max_sec=3):
+def random_delay(min_sec=0.5, max_sec=2):
     """Случайная задержка (имитация человека)"""
     time.sleep(random.uniform(min_sec, max_sec))
 
 def download_proxy_files():
-    """Скачивает файлы с прокси из репозитория"""
-    proxy_urls = {
-        "proxies_russia.txt": "https://raw.githubusercontent.com/Ganjo1st/Proctor/main/data/proxies_russia.txt",
-        "proxies_global.txt": "https://raw.githubusercontent.com/Ganjo1st/Proctor/main/data/proxies_global.txt",
-    }
-    
-    for filename, url in proxy_urls.items():
+    """Скачивает файлы с прокси из репозитория Proctor"""
+    for filename, url in PROXY_URLS.items():
         try:
             response = httpx.get(url, timeout=15)
             if response.status_code == 200:
@@ -82,18 +83,21 @@ def load_proxies_from_file(filename: str) -> List[str]:
             with open(filename, 'r', encoding='utf-8') as f:
                 for line in f:
                     line = line.strip()
+                    # Пропускаем комментарии и пустые строки
                     if line and not line.startswith('#'):
                         if ':' in line:
                             proxies.append(line)
             if proxies:
                 logger.info(f"📥 Загружено {len(proxies)} прокси из {filename}")
+            else:
+                logger.warning(f"⚠️ В файле {filename} нет прокси")
     except Exception as e:
         logger.error(f"❌ Ошибка чтения {filename}: {e}")
     return proxies
 
 async def test_proxy(proxy: str, timeout: int = 15) -> bool:
-    """Проверяет, работает ли прокси (с задержкой для имитации)"""
-    await asyncio.sleep(random.uniform(0.3, 0.8))
+    """Проверяет, работает ли прокси"""
+    await asyncio.sleep(random.uniform(0.2, 0.6))
     try:
         proxy_url = proxy
         if not proxy_url.startswith(('http://', 'socks5://')):
@@ -112,33 +116,30 @@ async def get_working_proxy() -> Optional[str]:
     # Скачиваем свежие файлы
     download_proxy_files()
     
-    # Перемешиваем порядок файлов для хаотичности
-    files_to_check = PROXY_FILES.copy()
-    random.shuffle(files_to_check)
-    
-    for filename in files_to_check:
+    # Проверяем файлы в порядке приоритета
+    for filename in PROXY_FILES:
         logger.info(f"🔍 Проверяем файл: {filename}")
         
         proxies = load_proxies_from_file(filename)
         
         if not proxies:
-            logger.warning(f"⚠️ В файле {filename} нет прокси")
+            logger.warning(f"⚠️ В файле {filename} нет прокси, переходим к следующему")
             continue
         
-        # Перемешиваем прокси
+        # Перемешиваем прокси для хаотичности
         random.shuffle(proxies)
         
         # Проверяем первые 5 прокси
         for proxy in proxies[:5]:
             logger.info(f"   Проверяем прокси: {proxy}")
             if await test_proxy(proxy):
-                logger.info(f"   ✅ Найден рабочий прокси: {proxy}")
+                logger.info(f"   ✅ Найден рабочий прокси из {filename}: {proxy}")
                 return proxy
             logger.warning(f"   ❌ Прокси не работает: {proxy}")
         
-        logger.warning(f"⚠️ В файле {filename} нет рабочих прокси")
+        logger.warning(f"⚠️ В файле {filename} нет рабочих прокси, переходим к следующему")
     
-    logger.warning("❌ Нет рабочих прокси. Работаем без прокси.")
+    logger.warning("❌ Нет рабочих прокси ни в одном файле. Работаем без прокси.")
     return None
 
 def load_state() -> Dict[str, Any]:
@@ -175,8 +176,8 @@ def save_hash_db(message_id: int, content_hash: str):
     try:
         db = load_hash_db()
         db["messages"][str(message_id)] = {"hash": content_hash, "date": datetime.now().isoformat()}
+        # Ограничиваем размер базы
         if len(db["messages"]) > 500:
-            # Оставляем последние 300
             items = sorted(db["messages"].items(), key=lambda x: x[1].get("date", ""))
             for old_key, _ in items[:200]:
                 del db["messages"][old_key]
@@ -188,9 +189,7 @@ def save_hash_db(message_id: int, content_hash: str):
 def is_duplicate(message_id: int, content_hash: str) -> bool:
     """Проверка на дубликат"""
     db = load_hash_db()
-    if str(message_id) in db["messages"]:
-        return True
-    return False
+    return str(message_id) in db["messages"]
 
 def calculate_hash(text: str) -> str:
     """Вычисляет хеш"""
@@ -219,7 +218,7 @@ def is_excluded_title(title: str) -> bool:
     return title.strip() in excluded
 
 async def download_media(client: TelegramClient, message: Message, save_dir: Path) -> Optional[Path]:
-    """Скачивает медиа с задержками"""
+    """Скачивает медиа"""
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             if not message.media:
@@ -312,8 +311,8 @@ async def main():
         logger.error("❌ Не указан CHANNEL_ID")
         return
     
-    # Случайная задержка перед началом (имитация человека)
-    await asyncio.sleep(random.uniform(2, 5))
+    # Случайная задержка перед началом
+    await asyncio.sleep(random.uniform(1, 3))
     
     # Получаем рабочий прокси
     proxy = await get_working_proxy()
@@ -375,8 +374,7 @@ async def main():
                 if msg.id > new_last_id:
                     new_last_id = msg.id
             
-            # Случайная задержка между сообщениями
-            await asyncio.sleep(random.uniform(1, 2.5))
+            await asyncio.sleep(random.uniform(0.5, 1.5))
         
         if new_last_id > last_id:
             save_state(new_last_id)
