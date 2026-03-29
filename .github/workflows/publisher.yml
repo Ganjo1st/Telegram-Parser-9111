@@ -1,16 +1,11 @@
 name: Publisher
 
 on:
-  # Запускается после успешного парсинга
-  workflow_run:
-    workflows: ["Telegram Parser"]
-    types:
-      - completed
   # Ручной запуск
   workflow_dispatch:
-  # Запуск по расписанию (каждые 3 часа)
+  # Запуск по расписанию (каждые 6 часов)
   schedule:
-    - cron: '0 */3 * * *'
+    - cron: '0 */6 * * *'
 
 jobs:
   publish:
@@ -25,8 +20,7 @@ jobs:
       with:
         name: posts
         path: posts/
-        # Если артефакт не найден, не ошибка
-        if-no-files-found: ignore
+      continue-on-error: true
     
     - name: Set up Python
       uses: actions/setup-python@v5
