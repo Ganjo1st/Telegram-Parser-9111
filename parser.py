@@ -19,7 +19,7 @@ from typing import Optional, Dict, List, Tuple
 
 from telethon import TelegramClient
 from telethon.tl.types import Message
-from telethon.errors import SessionPasswordNeededError, FloodWaitError
+from telethon.errors import SessionPasswordNeededError, FloodWaitError, PhoneCodeInvalidError
 from dotenv import load_dotenv
 
 # Импорт модуля для работы с сайтом
@@ -61,22 +61,36 @@ class TelegramParser:
         # Файл для хранения последнего обработанного ID
         self.state_file = Path('data/last_id.txt')
         
-        # Инициализация клиента Telegram
-        self.client = TelegramClient('session', self.api_id, self.api_hash)
+        # Директория для сессионных файлов
+        self.session_dir = Path('sessions')
+        self.session_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Путь к файлу сессии
+        self.session_file = self.session_dir / 'telegram_session'
+        
+        # Инициализация клиента Telegram с сохранением сессии
+        self.client = TelegramClient(str(self.session_file), self.api_id, self.api_hash)
         
         # Инициализация модуля для публикации на сайте (опционально)
-        # Если секреты для сайта не добавлены - публикация будет пропущена
+        self.website_poster = None
         try:
-            self.website_poster = WebsitePoster()
+            # Проверяем наличие секретов для сайта
+            site_url = os.getenv('SITE_URL', '')
+            site_login = os.getenv('SITE_LOGIN', '')
+            site_password = os.getenv('SITE_PASSWORD', '')
+            
+            if all([site_url, site_login, site_password]):
+                self.website_poster = WebsitePoster()
+                logger.info("✅ Модуль публикации на сайте инициализирован")
+            else:
+                logger.info("ℹ️ Секреты для сайта не добавлены, публикация будет пропущена")
+                logger.info("   Для включения публикации добавьте: SITE_URL, SITE_LOGIN, SITE_PASSWORD")
         except Exception as e:
             logger.warning(f"⚠️ Модуль публикации не инициализирован: {e}")
-            logger.info("Публикация на сайте будет пропущена. Посты будут только сохранены локально.")
             self.website_poster = None
     
     def _sanitize_filename(self, text: str, max_length: int = 200) -> str:
-        """
-        Очистка имени файла от недопустимых символов
-        """
+        """Очистка имени файла от недопустимых символов"""
         # Заменяем недопустимые символы
         text = re.sub(r'[<>:"/\\|?*]', '', text)
         # Заменяем пробелы и спецсимволы на подчеркивания
@@ -94,9 +108,7 @@ class TelegramParser:
         return text
     
     def _create_post_folder(self, message: Message) -> Path:
-        """
-        Создание папки для поста с человеко-читаемым именем
-        """
+        """Создание папки для поста с человеко-читаемым именем"""
         date = message.date.strftime('%Y%m%d_%H%M%S')
         # Получаем текст поста (первые 100 символов)
         text = message.text or message.raw_text or ""
@@ -110,9 +122,7 @@ class TelegramParser:
         return folder_path
     
     async def _download_media(self, message: Message, folder_path: Path) -> Optional[str]:
-        """
-        Скачивание медиафайла из сообщения
-        """
+        """Скачивание медиафайла из сообщения"""
         try:
             if message.media:
                 # Определяем тип медиа
@@ -164,9 +174,7 @@ class TelegramParser:
         return None
     
     async def _save_post_data(self, message: Message, folder_path: Path):
-        """
-        Сохранение данных поста (текст, метаданные, медиа)
-        """
+        """Сохранение данных поста (текст, метаданные, медиа)"""
         # Получаем текст сообщения
         text = message.text or message.raw_text or ""
         
@@ -219,9 +227,7 @@ class TelegramParser:
                 logger.error(f"   ❌ Ошибка публикации на сайте: {e}")
     
     async def get_last_processed_id(self) -> int:
-        """
-        Получение последнего обработанного ID сообщения
-        """
+        """Получение последнего обработанного ID сообщения"""
         if self.state_file.exists():
             try:
                 with open(self.state_file, 'r') as f:
@@ -231,28 +237,56 @@ class TelegramParser:
         return 0
     
     async def save_last_processed_id(self, message_id: int):
-        """
-        Сохранение последнего обработанного ID сообщения
-        """
+        """Сохранение последнего обработанного ID сообщения"""
         with open(self.state_file, 'w') as f:
             f.write(str(message_id))
         logger.info(f"✅ Состояние сохранено: ID {message_id}")
     
+    async def connect_to_telegram(self):
+        """Подключение к Telegram с обработкой кода подтверждения"""
+        try:
+            # Пытаемся подключиться с существующей сессией
+            await self.client.connect()
+            
+            if not await self.client.is_user_authorized():
+                logger.info("🔐 Требуется авторизация. Отправка кода подтверждения...")
+                
+                # Отправляем запрос на код
+                await self.client.send_code_request(self.phone)
+                logger.info("📱 Код подтверждения отправлен в Telegram")
+                logger.info("⚠️ ВНИМАНИЕ: Код нужно ввести вручную при первом запуске!")
+                logger.info("   Для этого запустите скрипт локально или используйте тестовый режим")
+                
+                # В GitHub Actions нет интерактивного ввода
+                # Поэтому при первом запуске нужно использовать уже существующую сессию
+                raise Exception("Требуется ручной ввод кода подтверждения. Пожалуйста, запустите парсер локально для первой авторизации.")
+            
+            logger.info("✅ Успешное подключение к Telegram")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка подключения к Telegram: {e}")
+            return False
+    
     async def parse_channel(self):
-        """
-        Основной метод парсинга канала
-        """
+        """Основной метод парсинга канала"""
         try:
             logger.info("=" * 50)
             logger.info("🚀 Запуск парсера Telegram")
             logger.info("=" * 50)
             
             # Подключаемся к Telegram
-            await self.client.start(phone=self.phone, password=self.password)
+            if not await self.connect_to_telegram():
+                logger.error("❌ Не удалось подключиться к Telegram")
+                return
             
             # Получаем информацию о текущем пользователе
-            me = await self.client.get_me()
-            logger.info(f"✅ Подключены как: {me.first_name} {me.last_name or ''}")
+            try:
+                me = await self.client.get_me()
+                logger.info(f"✅ Подключены как: {me.first_name} {me.last_name or ''}")
+            except Exception as e:
+                logger.error(f"❌ Не удалось получить информацию о пользователе: {e}")
+                return
             
             # Получаем канал
             try:
@@ -278,7 +312,6 @@ class TelegramParser:
             
             if not new_messages:
                 logger.info("📭 Новых сообщений нет")
-                await self.client.disconnect()
                 return
             
             logger.info(f"📄 Получено новых сообщений: {len(new_messages)}")
