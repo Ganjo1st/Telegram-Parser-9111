@@ -16,11 +16,11 @@ ENV/
 
 # Data files
 data/posts/
-data/last_id.txt
 !data/.gitkeep
 
 # Environment variables
 .env
+*.env
 
 # Logs
 *.log
@@ -34,3 +34,7 @@ data/last_id.txt
 # OS
 .DS_Store
 Thumbs.db
+
+# Cache
+.cache/
+.pytest_cache/
