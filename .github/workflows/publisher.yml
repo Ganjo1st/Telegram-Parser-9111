@@ -1,0 +1,47 @@
+name: Publisher
+
+on:
+  # Запускается после успешного парсинга
+  workflow_run:
+    workflows: ["Telegram Parser"]
+    types:
+      - completed
+  # Ручной запуск
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+    
+    - name: Download posts
+      uses: actions/download-artifact@v4
+      with:
+        name: posts
+        path: posts/
+    
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    
+    - name: Install dependencies
+      run: |
+        pip install selenium webdriver-manager
+    
+    - name: Run publisher
+      env:
+        LOGIN_EMAIL: ${{ secrets.LOGIN_EMAIL }}
+        LOGIN_PASSWORD: ${{ secrets.LOGIN_PASSWORD }}
+      run: |
+        python publisher.py
+    
+    - name: Upload published posts
+      uses: actions/upload-artifact@v4
+      with:
+        name: published-posts
+        path: published/
+        retention-days: 30
