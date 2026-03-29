@@ -2,40 +2,47 @@ name: Telegram Parser
 
 on:
   schedule:
-    - cron: '0 */6 * * *'  # Каждые 6 часов
-  workflow_dispatch:
+    - cron: '*/30 * * * *'  # Каждые 30 минут
+  workflow_dispatch:  # Ручной запуск
 
 jobs:
   parse:
     runs-on: ubuntu-latest
-    
+    permissions:
+      contents: write  # КЛЮЧЕВОЕ: даем права на запись
     steps:
-    - name: Checkout
-      uses: actions/checkout@v4
-    
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.11'
-    
-    - name: Install dependencies
-      run: |
-        pip install -r requirements.txt
-    
-    - name: Run parser
-      env:
-        API_ID: ${{ secrets.API_ID }}
-        API_HASH: ${{ secrets.API_HASH }}
-        PHONE_NUMBER: ${{ secrets.PHONE_NUMBER }}
-        CHANNEL_ID: ${{ secrets.CHANNEL_ID }}
-        PASSWORD: ${{ secrets.PASSWORD }}
-      run: |
-        python parser.py
-    
-    - name: Commit and push posts
-      run: |
-        git config user.name "github-actions[bot]"
-        git config user.email "github-actions[bot]@users.noreply.github.com"
-        git add data/posts/
-        git diff --quiet && git diff --staged --quiet || git commit -m "Update posts $(date +'%Y-%m-%d')"
-        git push
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}  # Используем стандартный токен
+          fetch-depth: 1
+          
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          
+      - name: Run parser
+        env:
+          API_ID: ${{ secrets.API_ID }}
+          API_HASH: ${{ secrets.API_HASH }}
+          PHONE_NUMBER: ${{ secrets.PHONE_NUMBER }}
+          CHANNEL_ID: ${{ secrets.CHANNEL_ID }}
+          PASSWORD: ${{ secrets.PASSWORD }}
+          # Прокси конфигурация
+          USE_PROXY: "true"
+          PROXY_LIST: ${{ secrets.PROXY_LIST }}
+        run: python parser.py
+        
+      - name: Commit and push changes
+        run: |
+          git config --local user.name "github-actions[bot]"
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/posts/
+          git diff --quiet && git diff --staged --quiet || git commit -m "Update posts $(date +'%Y-%m-%d %H:%M:%S')"
+          git push
