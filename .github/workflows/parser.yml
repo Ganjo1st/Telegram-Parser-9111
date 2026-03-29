@@ -2,31 +2,40 @@ name: Telegram Parser
 
 on:
   schedule:
-    - cron: '*/30 * * * *'  # Каждые 30 минут
-  workflow_dispatch:  # Ручной запуск
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
 
 jobs:
   parse:
     runs-on: ubuntu-latest
     permissions:
-      contents: write  # КЛЮЧЕВОЕ: даем права на запись
+      contents: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}  # Используем стандартный токен
+          token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 1
-          
+      
+      # Этот шаг не обязателен, так как мы загружаем прокси через raw.githubusercontent.com
+      # Но он может помочь для отладки
+      - name: Checkout Proctor repository (optional for local proxy files)
+        uses: actions/checkout@v4
+        with:
+          repository: Ganjo1st/Proctor
+          path: proctor_temp
+          fetch-depth: 1
+      
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-          
+      
       - name: Install dependencies
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
-          
+      
       - name: Run parser
         env:
           API_ID: ${{ secrets.API_ID }}
@@ -34,11 +43,12 @@ jobs:
           PHONE_NUMBER: ${{ secrets.PHONE_NUMBER }}
           CHANNEL_ID: ${{ secrets.CHANNEL_ID }}
           PASSWORD: ${{ secrets.PASSWORD }}
-          # Прокси конфигурация
-          USE_PROXY: "true"
-          PROXY_LIST: ${{ secrets.PROXY_LIST }}
+          # Настройки сайта
+          SITE_URL: ${{ secrets.SITE_URL }}
+          SITE_LOGIN: ${{ secrets.SITE_LOGIN }}
+          SITE_PASSWORD: ${{ secrets.SITE_PASSWORD }}
         run: python parser.py
-        
+      
       - name: Commit and push changes
         run: |
           git config --local user.name "github-actions[bot]"
