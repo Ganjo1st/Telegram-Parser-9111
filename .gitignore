@@ -1,0 +1,18 @@
+# Исключаем временные файлы
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.session
+*.session-journal
+
+# Исключаем папки с данными (они будут создаваться)
+data/posts/
+published/
+posts/
+
+# Исключаем локальные настройки
+.env
+*.log
+*.tmp
