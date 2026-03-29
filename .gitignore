@@ -1,16 +1,36 @@
-# Исключаем временные файлы
+# Python
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
+*.py[cod]
+*$py.class
+*.so
 .Python
 
-# Исключаем локальные настройки
-.env
-*.log
-*.tmp
+# Virtual Environment
+venv/
+env/
+ENV/
 
-# НЕ исключаем папки с данными (убираем data/posts из игнора)
-# data/posts/  # <-- УБРАТЬ ЭТУ СТРОКУ!
-# published/   # <-- УБРАТЬ ЭТУ СТРОКУ!
-# posts/       # <-- УБРАТЬ ЭТУ СТРОКУ!
+# Session files
+*.session
+*.session-journal
+
+# Data files
+data/posts/
+data/last_id.txt
+!data/.gitkeep
+
+# Environment variables
+.env
+
+# Logs
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
