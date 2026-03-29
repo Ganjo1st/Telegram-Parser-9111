@@ -7,7 +7,6 @@
 
 import os
 import sys
-import time
 import json
 import random
 import asyncio
@@ -41,14 +40,13 @@ class WebsitePoster:
         
         # URL и учетные данные сайта (из GitHub Secrets)
         self.site_url = os.getenv('SITE_URL', 'https://9111.ru').rstrip('/')
-        self.site_login = os.getenv('SITE_LOGIN', '')
+        self.site_login = os.getenv('SITE_LOGIN', '')  # Это email для входа
         self.site_password = os.getenv('SITE_PASSWORD', '')
         
         # Проверяем наличие секретов для сайта
         if not all([self.site_login, self.site_password]):
             logger.warning("⚠️ Отсутствуют SITE_LOGIN или SITE_PASSWORD в секретах GitHub")
             logger.info("📝 Публикация на сайте будет пропущена. Посты будут только сохранены локально.")
-            logger.info("   Для включения публикации добавьте секреты: SITE_URL, SITE_LOGIN, SITE_PASSWORD")
             raise Exception("Website credentials not configured")
         
         self.cookies = {}
@@ -74,6 +72,7 @@ class WebsitePoster:
         self.max_delay = 8
         
         logger.info(f"🌐 Инициализирован модуль публикации для сайта: {self.site_url}")
+        logger.info(f"📧 Email для входа: {self.site_login[:3]}...{self.site_login[-3:] if len(self.site_login) > 6 else ''}")
     
     def _download_proxies_from_github(self) -> List[str]:
         """Загрузка списка прокси из репозитория Proctor"""
@@ -92,13 +91,8 @@ class WebsitePoster:
             except Exception as e:
                 logger.warning(f"   ⚠️ Ошибка загрузки {proxy_type} прокси: {e}")
         
-        # Удаляем дубликаты, сохраняя порядок
-        unique_proxies = []
-        seen = set()
-        for proxy in all_proxies:
-            if proxy not in seen:
-                seen.add(proxy)
-                unique_proxies.append(proxy)
+        # Удаляем дубликаты
+        unique_proxies = list(dict.fromkeys(all_proxies))
         
         logger.info(f"📊 Всего уникальных прокси: {len(unique_proxies)}")
         
@@ -154,7 +148,7 @@ class WebsitePoster:
         headers = self.base_headers.copy()
         headers['User-Agent'] = self.ua.random
         
-        # Добавляем случайные параметры для имитации реального браузера
+        # Добавляем случайные параметры
         if random.random() > 0.7:
             headers['DNT'] = '1'
         if random.random() > 0.8:
@@ -164,13 +158,10 @@ class WebsitePoster:
     
     async def _make_request(self, url: str, method: str = 'GET', 
                            max_retries: int = 5, **kwargs) -> Optional[requests.Response]:
-        """
-        Выполнение запроса с использованием случайного прокси
-        При ошибке пробует следующий прокси
-        """
+        """Выполнение запроса с использованием случайного прокси"""
         proxies_list = self._get_proxies()
         
-        # Перемешиваем прокси для разнообразия
+        # Перемешиваем прокси
         shuffled = proxies_list.copy() if proxies_list else []
         random.shuffle(shuffled)
         
@@ -182,7 +173,6 @@ class WebsitePoster:
         for retry, proxy_str in enumerate(shuffled[:max_retries]):
             proxy_dict = None
             if proxy_str:
-                # Форматируем прокси
                 if proxy_str.startswith('socks5://'):
                     proxy_dict = {'http': proxy_str, 'https': proxy_str}
                 elif '://' in proxy_str:
@@ -190,7 +180,6 @@ class WebsitePoster:
                 else:
                     proxy_dict = {'http': f'http://{proxy_str}', 'https': f'http://{proxy_str}'}
             
-            # Генерируем свежие заголовки для каждого запроса
             headers = self._get_headers()
             
             try:
@@ -207,7 +196,6 @@ class WebsitePoster:
                     **kwargs
                 )
                 
-                # Проверяем успешность
                 if response.status_code == 200:
                     logger.debug(f"✅ Успех! Статус: {response.status_code}")
                     return response
@@ -249,8 +237,8 @@ class WebsitePoster:
             return False
     
     async def login(self) -> bool:
-        """Авторизация на сайте"""
-        logger.info("🔐 Попытка входа на сайт...")
+        """Авторизация на сайте с использованием email"""
+        logger.info(f"🔐 Попытка входа на сайт с email: {self.site_login[:3]}...")
         
         # Получаем главную страницу
         response = await self._make_request(self.site_url)
@@ -261,7 +249,7 @@ class WebsitePoster:
         # Ищем форму входа и CSRF токен
         soup = BeautifulSoup(response.text, 'html.parser')
         
-        # Пытаемся найти CSRF токен в различных атрибутах
+        # Пытаемся найти CSRF токен
         csrf_token = None
         for input_tag in soup.find_all('input'):
             name = input_tag.get('name', '').lower()
@@ -269,12 +257,14 @@ class WebsitePoster:
                 csrf_token = input_tag.get('value')
                 break
         
-        # URL для входа (может потребоваться корректировка под структуру 9111.ru)
+        # URL для входа
         login_url = urljoin(self.site_url, '/login')
         
-        # Данные для входа
+        # Данные для входа (email + пароль)
         login_data = {
-            'username': self.site_login,
+            'email': self.site_login,
+            'login': self.site_login,  # альтернативное поле
+            'username': self.site_login,  # альтернативное поле
             'password': self.site_password,
         }
         
@@ -282,11 +272,10 @@ class WebsitePoster:
             login_data['csrf_token'] = csrf_token
             login_data['_token'] = csrf_token
         
-        # Добавляем случайные поля для имитации реальной формы
+        # Добавляем случайные поля
         if random.random() > 0.5:
             login_data['remember'] = 'on'
         
-        # Небольшая задержка перед отправкой формы
         await self._human_delay()
         
         # Выполняем вход
@@ -308,18 +297,7 @@ class WebsitePoster:
     async def publish_post(self, title: str, content: str, 
                           media_path: Optional[str] = None,
                           source_id: Optional[int] = None) -> Optional[str]:
-        """
-        Публикация поста на сайте
-        
-        Args:
-            title: Заголовок поста
-            content: Текст поста
-            media_path: Путь к медиафайлу (опционально)
-            source_id: ID исходного сообщения
-            
-        Returns:
-            URL опубликованного поста или None
-        """
+        """Публикация поста на сайте"""
         logger.info(f"📝 Публикация поста: {title[:50]}...")
         
         # Проверяем авторизацию
@@ -327,7 +305,7 @@ class WebsitePoster:
             if not await self.login():
                 return None
         
-        # URL для создания публикации (может потребоваться корректировка)
+        # URL для создания публикации
         publish_url = urljoin(self.site_url, '/blog/add/')
         
         # Подготавливаем данные
@@ -342,7 +320,7 @@ class WebsitePoster:
         if random.random() > 0.6:
             data['tags'] = random.choice(['новости', 'аналитика', 'обзор', 'события'])
         
-        # Подготавливаем файл для загрузки
+        # Подготавливаем файл
         files = None
         if media_path and os.path.exists(media_path):
             with open(media_path, 'rb') as f:
@@ -350,7 +328,6 @@ class WebsitePoster:
                     'image': (os.path.basename(media_path), f, 'image/jpeg')
                 }
         
-        # Случайная задержка перед отправкой
         await self._human_delay()
         
         # Выполняем публикацию
@@ -365,11 +342,9 @@ class WebsitePoster:
         if not response:
             return None
         
-        # Пытаемся извлечь URL опубликованного поста
+        # Извлекаем URL поста
         if response.status_code in [200, 201]:
             soup = BeautifulSoup(response.text, 'html.parser')
-            
-            # Ищем ссылку на созданный пост
             for link in soup.find_all('a'):
                 href = link.get('href', '')
                 if any(part in href for part in ['/blog/', '/post/', '/article/', '/p/']):
@@ -378,15 +353,12 @@ class WebsitePoster:
                     else:
                         return urljoin(self.site_url, href)
             
-            logger.info("✅ Пост опубликован, но URL не найден")
+            logger.info("✅ Пост опубликован")
             return f"{self.site_url}/blog/success"
             
         elif response.status_code == 302 and response.headers.get('Location'):
             location = response.headers['Location']
-            if location.startswith('http'):
-                return location
-            else:
-                return urljoin(self.site_url, location)
+            return location if location.startswith('http') else urljoin(self.site_url, location)
         else:
             logger.error(f"❌ Ошибка публикации, статус: {response.status_code}")
             return None
