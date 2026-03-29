@@ -2,28 +2,20 @@ name: Telegram Parser
 
 on:
   schedule:
-    - cron: '*/30 * * * *'
-  workflow_dispatch:
+    - cron: '*/30 * * * *'  # Каждые 30 минут
+  workflow_dispatch:  # Ручной запуск
 
 jobs:
   parse:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: write  # Права на запись в репозиторий
+    
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          fetch-depth: 1
-      
-      # Этот шаг не обязателен, так как мы загружаем прокси через raw.githubusercontent.com
-      # Но он может помочь для отладки
-      - name: Checkout Proctor repository (optional for local proxy files)
-        uses: actions/checkout@v4
-        with:
-          repository: Ganjo1st/Proctor
-          path: proctor_temp
           fetch-depth: 1
       
       - name: Set up Python
@@ -38,12 +30,13 @@ jobs:
       
       - name: Run parser
         env:
+          # Telegram credentials
           API_ID: ${{ secrets.API_ID }}
           API_HASH: ${{ secrets.API_HASH }}
           PHONE_NUMBER: ${{ secrets.PHONE_NUMBER }}
           CHANNEL_ID: ${{ secrets.CHANNEL_ID }}
           PASSWORD: ${{ secrets.PASSWORD }}
-          # Настройки сайта
+          # Website credentials (9111.ru)
           SITE_URL: ${{ secrets.SITE_URL }}
           SITE_LOGIN: ${{ secrets.SITE_LOGIN }}
           SITE_PASSWORD: ${{ secrets.SITE_PASSWORD }}
@@ -53,6 +46,6 @@ jobs:
         run: |
           git config --local user.name "github-actions[bot]"
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
-          git add data/posts/
+          git add data/posts/ data/last_id.txt
           git diff --quiet && git diff --staged --quiet || git commit -m "Update posts $(date +'%Y-%m-%d %H:%M:%S')"
           git push
