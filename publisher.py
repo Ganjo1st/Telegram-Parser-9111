@@ -24,16 +24,16 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
+from selenium.common.exceptions import TimeoutException, NoSuchElementException
 from webdriver_manager.chrome import ChromeDriverManager
 from fake_useragent import UserAgent
 
 # ========== НАСТРОЙКИ ==========
-POSTS_DIR = Path("data/posts")                 # Папка с новыми постами от парсера
-PUBLISHED_DIR = Path("published")              # Папка для успешно опубликованных
-STATE_FILE = Path("publisher_state.json")      # Файл состояния
-MAX_PUBLISH_PER_DAY = 8                        # Максимум публикаций в день
+POSTS_DIR = Path("data/posts")
+PUBLISHED_DIR = Path("published")
+STATE_FILE = Path("publisher_state.json")
+MAX_PUBLISH_PER_DAY = 8
 
-# Настройка логирования
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -65,11 +65,8 @@ def setup_driver() -> webdriver.Chrome:
     width, height = random.choice(sizes)
     options.add_argument(f"--window-size={width},{height}")
     
-    # Запуск драйвера
     service = Service(ChromeDriverManager().install())
     driver = webdriver.Chrome(service=service, options=options)
-    
-    # Убираем следы автоматизации
     driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
     
     return driver
@@ -101,27 +98,31 @@ def random_mouse_move(driver):
         pass
 
 
+def scroll_page(driver):
+    """Имитирует прокрутку"""
+    try:
+        driver.execute_script(f"window.scrollBy(0, {random.randint(100, 300)});")
+        random_sleep(0.5, 1.5)
+    except:
+        pass
+
+
 def generate_tags(text: str) -> str:
     """Генерирует теги на основе текста"""
     tags = ["новости", "россия", "мир"]
     text_lower = text.lower()
-    if "иран" in text_lower:
-        tags.append("иран")
-    if "европ" in text_lower:
-        tags.append("европа")
-    if "росси" in text_lower:
-        tags.append("россия")
-    if "война" in text_lower:
-        tags.append("конфликт")
-    if "китай" in text_lower:
-        tags.append("китай")
-    if "сша" in text_lower or "америк" in text_lower:
-        tags.append("сша")
+    if "иран" in text_lower: tags.append("иран")
+    if "европ" in text_lower: tags.append("европа")
+    if "росси" in text_lower: tags.append("россия")
+    if "война" in text_lower: tags.append("конфликт")
+    if "китай" in text_lower: tags.append("китай")
+    if "сша" in text_lower or "америк" in text_lower: tags.append("сша")
+    if "израиль" in text_lower: tags.append("израиль")
     return ", ".join(list(dict.fromkeys(tags))[:5])
 
 
 def load_state() -> dict:
-    """Загружает состояние публикаций из JSON-файла"""
+    """Загружает состояние публикаций"""
     if STATE_FILE.exists():
         try:
             with open(STATE_FILE, 'r', encoding='utf-8') as f:
@@ -187,7 +188,7 @@ def parse_post_file(post_folder: Path) -> Tuple[Optional[str], Optional[str], Op
 
     title = lines[0]
     
-    # Очищаем заголовок от эмодзи
+    # Очищаем заголовок от эмодзи и лишних символов
     import re
     emoji_pattern = re.compile("["
         u"\U0001F600-\U0001F64F"
@@ -196,6 +197,10 @@ def parse_post_file(post_folder: Path) -> Tuple[Optional[str], Optional[str], Op
         u"\U0001F1E0-\U0001F1FF"
         "]+", flags=re.UNICODE)
     title = emoji_pattern.sub(r'', title).strip()
+    
+    # Ограничиваем длину заголовка (макс 150 символов)
+    if len(title) > 150:
+        title = title[:147] + "..."
 
     post_text = "\n".join(lines[1:]) if len(lines) > 1 else ""
     images = list(post_folder.glob("image.*"))
@@ -205,7 +210,7 @@ def parse_post_file(post_folder: Path) -> Tuple[Optional[str], Optional[str], Op
 
 
 def login_to_9111(driver, email: str, password: str) -> bool:
-    """Выполняет вход на сайт с имитацией человеческого поведения"""
+    """Авторизация на сайте 9111.ru"""
     logger.info("   🔑 Авторизация...")
     try:
         driver.get("https://9111.ru/")
@@ -252,6 +257,7 @@ def login_to_9111(driver, email: str, password: str) -> bool:
 
         # Проверяем успешность входа
         return len(driver.find_elements(By.CLASS_NAME, "userMenuOpen")) > 0
+        
     except Exception as e:
         logger.error(f"   ❌ Ошибка авторизации: {e}")
         return False
@@ -260,6 +266,7 @@ def login_to_9111(driver, email: str, password: str) -> bool:
 def upload_image(driver, image_path: Path) -> bool:
     """Загружает изображение через кнопку '+ Фото'"""
     try:
+        # Ищем кнопку "+ Фото"
         photo_label = WebDriverWait(driver, 15).until(
             EC.element_to_be_clickable((By.XPATH, "//label[contains(@class, 'lite_editor_tools_btn') and contains(text(), '+ Фото')]"))
         )
@@ -267,6 +274,7 @@ def upload_image(driver, image_path: Path) -> bool:
         photo_label.click()
         random_sleep(1, 2)
 
+        # Ищем input для загрузки файла
         file_input = driver.find_element(By.CSS_SELECTOR, "input[type='file']")
         file_input.send_keys(str(image_path.absolute()))
         logger.info(f"   ✅ Изображение загружено")
@@ -297,7 +305,7 @@ def publish_post(driver, post_folder: Path, email: str, password: str, state: di
     logger.info(f"   📝 Публикуем: {title[:50]}...")
 
     try:
-        # Переходим на страницу создания публикации
+        # Переходим на страницу выбора типа публикации
         driver.get("https://9111.ru/pubs/add/")
         random_sleep(4, 6)
 
@@ -309,7 +317,7 @@ def publish_post(driver, post_folder: Path, email: str, password: str, state: di
             driver.get("https://9111.ru/pubs/add/")
             random_sleep(3, 5)
 
-        # Выбор категории "Новость, статья"
+        # Выбираем "Новость, статья"
         news_link = WebDriverWait(driver, 15).until(
             EC.element_to_be_clickable((By.XPATH, "//a[contains(text(), 'Новость, статья')]"))
         )
@@ -318,16 +326,17 @@ def publish_post(driver, post_folder: Path, email: str, password: str, state: di
         driver.execute_script("arguments[0].click();", news_link)
         random_sleep(3, 5)
 
-        # Заголовок
+        # Заголовок (contenteditable div)
         title_input = WebDriverWait(driver, 20).until(
             EC.presence_of_element_located((By.ID, "topic_name"))
         )
         title_input.click()
-        title_input.clear()
+        # Очищаем contenteditable div
+        driver.execute_script("arguments[0].innerHTML = '';", title_input)
         human_type(title_input, title)
         random_sleep(2, 4)
 
-        # Выбор рубрики (если требуется)
+        # Выбор рубрики (опционально)
         try:
             rubric = WebDriverWait(driver, 10).until(
                 EC.element_to_be_clickable((By.ID, "rubric_id2"))
@@ -339,13 +348,14 @@ def publish_post(driver, post_folder: Path, email: str, password: str, state: di
             pass
         random_sleep(2, 3)
 
-        # Текст поста
+        # Текст в редакторе
         editor = WebDriverWait(driver, 10).until(
             EC.presence_of_element_located((By.ID, "lite_editor_container"))
         )
         editor.click()
         driver.execute_script("arguments[0].innerHTML = '';", editor)
 
+        # Вставляем текст по абзацам
         for paragraph in post_text.split('\n'):
             if paragraph.strip():
                 driver.execute_script(f"arguments[0].innerHTML += '<p>{paragraph.strip()}</p>';", editor)
@@ -391,28 +401,18 @@ def publish_post(driver, post_folder: Path, email: str, password: str, state: di
 
 
 def get_all_posts() -> List[Path]:
-    """Получает список всех папок с постами с детальным логированием"""
-    logger.info(f"🔍 Поиск постов в {POSTS_DIR.absolute()}")
-    
+    """Получает список всех папок с постами"""
     if not POSTS_DIR.exists():
         logger.warning(f"⚠️ Папка {POSTS_DIR} не существует")
         return []
     
-    # Рекурсивный поиск всех подпапок
     all_items = list(POSTS_DIR.iterdir())
-    logger.info(f"📁 Всего элементов в {POSTS_DIR}: {len(all_items)}")
-    
-    posts = []
-    for item in all_items:
-        if item.is_dir():
-            posts.append(item)
-            logger.debug(f"   Найдена папка: {item.name[:80]}")
+    posts = [p for p in all_items if p.is_dir()]
     
     logger.info(f"📊 Найдено папок-постов: {len(posts)}")
     
-    # Показываем первые 5 для отладки
     if posts:
-        logger.info(f"   Примеры: {', '.join([p.name[:50] for p in posts[:5]])}")
+        logger.info(f"   Примеры: {', '.join([p.name[:50] for p in posts[:3]])}")
     
     return posts
 
@@ -427,18 +427,16 @@ def main():
     password = os.getenv("SITE_PASSWORD")
 
     if not email or not password:
-        logger.error("❌ Не найдены учетные данные SITE_EMAIL / SITE_PASSWORD в секретах GitHub")
+        logger.error("❌ Не найдены учетные данные SITE_EMAIL / SITE_PASSWORD")
         logger.info("   Добавьте секреты: SITE_EMAIL и SITE_PASSWORD")
         sys.exit(1)
 
-    # Получаем все посты
     all_posts = get_all_posts()
     
     if not all_posts:
         logger.info("📭 Нет постов для публикации.")
         return
 
-    # Загружаем состояние
     state = load_state()
     state = reset_daily_counter(state)
 
