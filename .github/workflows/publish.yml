@@ -39,7 +39,7 @@ jobs:
         env:
           SITE_EMAIL: ${{ secrets.SITE_EMAIL }}
           SITE_PASSWORD: ${{ secrets.SITE_PASSWORD }}
-        run: python src/publisher.py
+        run: python publisher.py
       
       - name: Commit and push published state
         run: |
@@ -58,3 +58,4 @@ jobs:
             *.png
             auth_error.png
             publish_error.png
+          if-no-files-found: ignore
