@@ -391,15 +391,26 @@ def publish_post(driver, post_folder: Path, email: str, password: str, state: di
 
 
 def get_all_posts() -> List[Path]:
-    """Получает список всех папок с постами"""
+    """Получает список всех папок с постами с детальным логированием"""
+    logger.info(f"🔍 Поиск постов в {POSTS_DIR.absolute()}")
+    
     if not POSTS_DIR.exists():
-        logger.warning(f"⚠️ Папка с постами {POSTS_DIR} не существует")
+        logger.warning(f"⚠️ Папка {POSTS_DIR} не существует")
         return []
     
-    posts = [p for p in POSTS_DIR.iterdir() if p.is_dir()]
-    logger.info(f"📊 Найдено папок в {POSTS_DIR}: {len(posts)}")
+    # Рекурсивный поиск всех подпапок
+    all_items = list(POSTS_DIR.iterdir())
+    logger.info(f"📁 Всего элементов в {POSTS_DIR}: {len(all_items)}")
     
-    # Показываем первые 5 папок для отладки
+    posts = []
+    for item in all_items:
+        if item.is_dir():
+            posts.append(item)
+            logger.debug(f"   Найдена папка: {item.name[:80]}")
+    
+    logger.info(f"📊 Найдено папок-постов: {len(posts)}")
+    
+    # Показываем первые 5 для отладки
     if posts:
         logger.info(f"   Примеры: {', '.join([p.name[:50] for p in posts[:5]])}")
     
