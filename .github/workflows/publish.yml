@@ -36,9 +36,6 @@ jobs:
           find data/posts -type d | wc -l || echo "0"
       
       - name: Run publisher
-        env:
-          SITE_EMAIL: ${{ secrets.SITE_EMAIL }}
-          SITE_PASSWORD: ${{ secrets.SITE_PASSWORD }}
         run: python publisher.py
       
       - name: Commit and push published state
