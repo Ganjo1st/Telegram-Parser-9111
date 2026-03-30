@@ -25,7 +25,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
-from selenium.common.exceptions import TimeoutException, NoSuchElementException
+from selenium.common.exceptions import TimeoutException, NoSuchElementException, WebDriverException
 from webdriver_manager.chrome import ChromeDriverManager
 from fake_useragent import UserAgent
 import httpx
@@ -35,6 +35,7 @@ POSTS_DIR = Path("data/posts")
 PUBLISHED_DIR = Path("published")
 STATE_FILE = Path("publisher_state.json")
 MAX_PUBLISH_PER_DAY = 8
+MAX_PROXY_RETRIES = 3  # Максимум попыток с одним прокси
 
 # Прокси из репозитория Proctor
 PROXY_SOURCES = {
@@ -87,27 +88,23 @@ def test_proxy(proxy: str, timeout: int = 10) -> bool:
         return False
 
 
-def get_working_proxy() -> Optional[str]:
-    """Возвращает первый работающий прокси"""
+def find_working_proxy(proxies_list: List[str]) -> Optional[str]:
+    """Находит первый работающий прокси из списка"""
     logger.info("🔍 Поиск рабочего прокси...")
     
-    proxies = download_proxies()
-    
-    if not proxies:
-        logger.warning("⚠️ Нет прокси, работаем без прокси")
+    if not proxies_list:
         return None
     
-    random.shuffle(proxies)
+    random.shuffle(proxies_list)
     
-    # Проверяем первые 20 прокси
-    for proxy in proxies[:20]:
+    for proxy in proxies_list[:20]:
         logger.info(f"   Проверяем: {proxy}")
         if test_proxy(proxy):
             logger.info(f"   ✅ Найден рабочий прокси: {proxy}")
             return proxy
         logger.info(f"   ❌ Не работает")
     
-    logger.warning("⚠️ Нет рабочих прокси, работаем без прокси")
+    logger.warning("⚠️ Нет рабочих прокси")
     return None
 
 
@@ -507,6 +504,7 @@ def main():
     state = load_state()
     state = reset_daily_counter(state)
 
+    # Фильтруем новые посты
     new_posts = []
     for post in all_posts:
         title, _, _ = parse_post_file(post)
@@ -522,29 +520,66 @@ def main():
         logger.info("📭 Нет новых постов.")
         return
 
-    proxy = get_working_proxy()
-    driver = setup_driver_with_proxy(proxy)
-
+    # ========== ОПТИМИЗИРОВАННАЯ ЛОГИКА РАБОТЫ С ПРОКСИ ==========
+    # 1. Скачиваем список прокси один раз
+    all_proxies = download_proxies()
+    
+    # 2. Находим первый рабочий прокси
+    current_proxy = find_working_proxy(all_proxies)
+    
+    # 3. Запускаем драйвер с этим прокси
+    driver = setup_driver_with_proxy(current_proxy)
+    proxy_fail_count = 0
+    
     published_count = 0
+    
     try:
-        for post_folder in new_posts:
+        for i, post_folder in enumerate(new_posts, 1):
             if not can_publish_today(state):
                 logger.warning(f"⏸️ Лимит {MAX_PUBLISH_PER_DAY} достигнут.")
                 break
-
-            if publish_post(driver, post_folder, email, password, state):
+            
+            logger.info(f"\n{'='*50}")
+            logger.info(f"📌 Пост {i}/{len(new_posts)}")
+            
+            # Публикуем пост
+            success = publish_post(driver, post_folder, email, password, state)
+            
+            if success:
                 published_count += 1
-                pause = random.randint(120, 300)
-                logger.info(f"⏳ Пауза {pause} сек...")
-                time.sleep(pause)
+                proxy_fail_count = 0  # Сбрасываем счетчик ошибок
+                
+                # Пауза между постами
+                if i < len(new_posts):
+                    pause = random.randint(120, 300)  # 2-5 минут
+                    logger.info(f"⏳ Пауза {pause} сек перед следующим постом...")
+                    time.sleep(pause)
             else:
-                logger.warning("   🔄 Пробуем сменить прокси...")
-                driver.quit()
-                proxy = get_working_proxy()
-                driver = setup_driver_with_proxy(proxy)
-                time.sleep(10)
-
-        logger.info(f"\n📊 ИТОГИ: Опубликовано {published_count} новых постов.")
+                proxy_fail_count += 1
+                logger.warning(f"   ⚠️ Ошибка публикации (попытка {proxy_fail_count}/{MAX_PROXY_RETRIES})")
+                
+                # Если прокси перестал работать, пробуем сменить
+                if proxy_fail_count >= MAX_PROXY_RETRIES:
+                    logger.info("   🔄 Смена прокси...")
+                    driver.quit()
+                    
+                    # Ищем новый прокси (исключая текущий)
+                    available_proxies = [p for p in all_proxies if p != current_proxy]
+                    current_proxy = find_working_proxy(available_proxies)
+                    
+                    if current_proxy:
+                        driver = setup_driver_with_proxy(current_proxy)
+                        proxy_fail_count = 0
+                        logger.info("   ✅ Прокси сменен, продолжаем...")
+                    else:
+                        logger.error("   ❌ Нет рабочих прокси. Остановка.")
+                        break
+                else:
+                    # Небольшая пауза перед повторной попыткой с тем же прокси
+                    time.sleep(30)
+        
+        logger.info(f"\n📊 ИТОГИ: Опубликовано {published_count} из {len(new_posts)} новых постов.")
+        
     finally:
         driver.quit()
 
