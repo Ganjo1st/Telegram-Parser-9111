@@ -2,14 +2,12 @@
 # -*- coding: utf-8 -*-
 """
 Telegram Parser for 9111.ru
-Парсинг Telegram каналов и публикация на 9111.ru с обходом защиты
+Парсинг Telegram каналов и сохранение постов (без автоматической публикации)
 """
 
 import os
 import sys
 import json
-import time
-import random
 import asyncio
 import logging
 import re
@@ -21,9 +19,6 @@ from telethon import TelegramClient
 from telethon.tl.types import Message
 from telethon.errors import SessionPasswordNeededError, FloodWaitError
 from dotenv import load_dotenv
-
-# Импорт модуля для работы с сайтом
-from website_poster import WebsitePoster
 
 # Загрузка переменных окружения
 load_dotenv()
@@ -41,55 +36,63 @@ class TelegramParser:
     
     def __init__(self):
         """Инициализация парсера"""
+        # Получаем данные из секретов GitHub
         self.api_id = int(os.getenv('API_ID', 0))
         self.api_hash = os.getenv('API_HASH', '')
         self.phone = os.getenv('PHONE_NUMBER', '')
         self.password = os.getenv('PASSWORD', '')
         self.channel_id = os.getenv('CHANNEL_ID', '')
         
+        # Проверка обязательных параметров
         if not all([self.api_id, self.api_hash, self.phone, self.channel_id]):
             logger.error("❌ Отсутствуют необходимые переменные окружения")
+            logger.info("Пожалуйста, добавьте секреты: API_ID, API_HASH, PHONE_NUMBER, CHANNEL_ID")
             sys.exit(1)
         
+        # Создаем директорию для данных
         self.data_dir = Path('data/posts')
         self.data_dir.mkdir(parents=True, exist_ok=True)
         
+        # Файл для хранения последнего обработанного ID
         self.state_file = Path('data/last_id.txt')
         
+        # Директория для сессионных файлов
         self.session_dir = Path('sessions')
         self.session_dir.mkdir(parents=True, exist_ok=True)
         
+        # Путь к файлу сессии
         self.session_file = self.session_dir / 'telegram_session'
+        
+        # Инициализация клиента Telegram
         self.client = TelegramClient(str(self.session_file), self.api_id, self.api_hash)
         
-        self.website_poster = None
-        try:
-            site_url = os.getenv('SITE_URL', '')
-            site_login = os.getenv('SITE_LOGIN', '')
-            site_password = os.getenv('SITE_PASSWORD', '')
-            
-            if all([site_url, site_login, site_password]):
-                self.website_poster = WebsitePoster()
-                logger.info("✅ Модуль публикации на сайте инициализирован")
-        except Exception as e:
-            logger.warning(f"⚠️ Модуль публикации не инициализирован: {e}")
-            self.website_poster = None
+        # Флаг отключения публикации (для разделения workflow)
+        self.disable_publishing = os.getenv('DISABLE_PUBLISHING', 'false').lower() == 'true'
+        if self.disable_publishing:
+            logger.info("ℹ️ Режим 'только сохранение': публикация на сайте отключена")
     
     def _sanitize_filename(self, text: str, max_length: int = 200) -> str:
-        """Очистка имени файла"""
+        """Очистка имени файла от недопустимых символов"""
+        # Заменяем недопустимые символы
         text = re.sub(r'[<>:"/\\|?*]', '', text)
+        # Заменяем пробелы и спецсимволы на подчеркивания
         text = re.sub(r'[\s\x00-\x1f\x7f-\x9f]+', '_', text)
+        # Удаляем управляющие символы
         text = re.sub(r'[\x00-\x1f\x7f-\x9f]', '', text)
+        # Ограничиваем длину
         if len(text) > max_length:
             text = text[:max_length]
+        # Удаляем подчеркивания в конце
         text = text.rstrip('_')
+        # Если текст пустой - используем временную метку
         if not text:
             text = datetime.now().strftime('%Y%m%d_%H%M%S')
         return text
     
     def _create_post_folder(self, message: Message) -> Path:
-        """Создание папки для поста"""
+        """Создание папки для поста с человеко-читаемым именем"""
         date = message.date.strftime('%Y%m%d_%H%M%S')
+        # Получаем текст поста (первые 100 символов)
         text = message.text or message.raw_text or ""
         text = text.strip().replace('\n', ' ')[:100]
         text = self._sanitize_filename(text)
@@ -101,7 +104,7 @@ class TelegramParser:
         return folder_path
     
     async def _download_media(self, message: Message, folder_path: Path) -> Optional[str]:
-        """Скачивание медиафайла"""
+        """Скачивание медиафайла из сообщения"""
         try:
             if message.media:
                 media_type = str(type(message.media))
@@ -149,14 +152,17 @@ class TelegramParser:
         return None
     
     async def _save_post_data(self, message: Message, folder_path: Path):
-        """Сохранение данных поста"""
+        """Сохранение данных поста (текст, метаданные, медиа)"""
+        # Получаем текст сообщения
         text = message.text or message.raw_text or ""
         
+        # Сохраняем текст
         text_file = folder_path / 'text.txt'
         with open(text_file, 'w', encoding='utf-8') as f:
             f.write(text)
         logger.info(f"   ✅ Текст сохранен ({len(text)} символов)")
         
+        # Сохраняем метаданные
         meta_file = folder_path / 'meta.json'
         metadata = {
             'id': message.id,
@@ -169,33 +175,19 @@ class TelegramParser:
         with open(meta_file, 'w', encoding='utf-8') as f:
             json.dump(metadata, f, ensure_ascii=False, indent=2)
         
+        # Скачиваем медиа (если есть)
         media_path = await self._download_media(message, folder_path)
         if media_path:
             metadata['media_path'] = str(Path(media_path).name)
+            # Обновляем метаданные
             with open(meta_file, 'w', encoding='utf-8') as f:
                 json.dump(metadata, f, ensure_ascii=False, indent=2)
         
-        if self.website_poster and text.strip():
-            try:
-                if await self.website_poster.check_site_availability():
-                    post_url = await self.website_poster.publish_post(
-                        title=f"Пост от {message.date.strftime('%Y-%m-%d %H:%M')}",
-                        content=text,
-                        media_path=media_path if media_path else None,
-                        source_id=message.id
-                    )
-                    if post_url:
-                        metadata['published_url'] = post_url
-                        with open(meta_file, 'w', encoding='utf-8') as f:
-                            json.dump(metadata, f, ensure_ascii=False, indent=2)
-                        logger.info(f"   🌐 Опубликовано на сайте: {post_url}")
-                else:
-                    logger.warning("   ⚠️ Сайт недоступен, публикация отложена")
-            except Exception as e:
-                logger.error(f"   ❌ Ошибка публикации на сайте: {e}")
+        # Публикация на сайте ОТКЛЮЧЕНА (будет выполняться отдельным workflow)
+        # Посты сохраняются в data/posts/ для последующей публикации
     
     async def get_last_processed_id(self) -> int:
-        """Получение последнего обработанного ID"""
+        """Получение последнего обработанного ID сообщения"""
         if self.state_file.exists():
             try:
                 with open(self.state_file, 'r') as f:
@@ -203,11 +195,11 @@ class TelegramParser:
                     if content:
                         return int(content)
             except (ValueError, IOError):
-                pass
+                return 0
         return 0
     
     async def save_last_processed_id(self, message_id: int):
-        """Сохранение последнего обработанного ID"""
+        """Сохранение последнего обработанного ID сообщения"""
         with open(self.state_file, 'w') as f:
             f.write(str(message_id))
         logger.info(f"✅ Состояние сохранено: ID {message_id}")
@@ -258,9 +250,11 @@ class TelegramParser:
             logger.info("🚀 Запуск парсера Telegram")
             logger.info("=" * 50)
             
+            # Подключаемся к Telegram
             if not await self.connect_to_telegram():
                 return
             
+            # Получаем информацию о пользователе
             try:
                 me = await self.client.get_me()
                 logger.info(f"✅ Подключены как: {me.first_name} {me.last_name or ''}")
@@ -268,6 +262,7 @@ class TelegramParser:
                 logger.error(f"❌ Не удалось получить информацию о пользователе: {e}")
                 return
             
+            # Получаем канал
             try:
                 channel = await self.client.get_entity(self.channel_id)
                 channel_title = getattr(channel, 'title', str(self.channel_id))
@@ -276,6 +271,7 @@ class TelegramParser:
                 logger.error(f"❌ Не удалось получить канал: {e}")
                 return
             
+            # Получаем последний обработанный ID
             last_id = await self.get_last_processed_id()
             logger.info(f"📄 Последний обработанный ID: {last_id}")
             
@@ -289,17 +285,23 @@ class TelegramParser:
             
             logger.info(f"📄 Получено новых сообщений: {len(new_messages)}")
             
+            # Обрабатываем сообщения
             for idx, message in enumerate(new_messages, 1):
                 logger.info(f"\n{'─' * 40}")
                 logger.info(f"📄 [{idx}/{len(new_messages)}] ID {message.id} от {message.date.strftime('%Y-%m-%d %H:%M:%S')}")
                 
+                # Создаем папку для поста
                 folder_path = self._create_post_folder(message)
                 logger.info(f"   📁 Папка: {folder_path.name}")
                 
+                # Сохраняем данные поста
                 await self._save_post_data(message, folder_path)
+                
+                # Сохраняем последний обработанный ID
                 await self.save_last_processed_id(message.id)
                 
-                await asyncio.sleep(random.uniform(0.5, 1.5))
+                # Небольшая задержка между обработкой сообщений
+                await asyncio.sleep(0.5)
             
             logger.info(f"\n{'=' * 50}")
             logger.info(f"🎉 Обработано: {len(new_messages)} новых постов")
@@ -311,6 +313,7 @@ class TelegramParser:
             await asyncio.sleep(e.seconds)
         except SessionPasswordNeededError:
             logger.error("❌ Требуется пароль двухфакторной аутентификации")
+            logger.info("Добавьте PASSWORD в секреты GitHub")
         except Exception as e:
             logger.error(f"❌ Неожиданная ошибка: {e}")
             raise
@@ -320,6 +323,7 @@ class TelegramParser:
 
 
 async def main():
+    """Главная функция"""
     parser = TelegramParser()
     await parser.parse_channel()
 
