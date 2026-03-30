@@ -3,7 +3,7 @@ name: 01 - Parse Telegram
 on:
   schedule:
     - cron: '*/30 * * * *'  # Каждые 30 минут
-  workflow_dispatch:        # Ручной запуск
+  workflow_dispatch:
 
 jobs:
   parse:
@@ -41,6 +41,8 @@ jobs:
         run: |
           git config --local user.name "github-actions[bot]"
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          # Добавляем ВСЕ файлы, включая папки с постами
           git add data/posts/ data/last_id.txt
+          git add -f data/posts/*/  # Принудительно добавляем папки
           git diff --quiet && git diff --staged --quiet || git commit -m "Update posts from Telegram $(date +'%Y-%m-%d %H:%M:%S')" || true
           git push
