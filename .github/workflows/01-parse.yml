@@ -34,7 +34,6 @@ jobs:
           PHONE_NUMBER: ${{ secrets.PHONE_NUMBER }}
           CHANNEL_ID: ${{ secrets.CHANNEL_ID }}
           PASSWORD: ${{ secrets.PASSWORD }}
-          # Отключаем публикацию в парсере
           DISABLE_PUBLISHING: "true"
         run: python parser.py
 
