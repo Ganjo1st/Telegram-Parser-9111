@@ -15,7 +15,7 @@ import hashlib
 import logging
 from pathlib import Path
 from datetime import datetime, date
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List
 
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -54,7 +54,7 @@ def setup_driver() -> webdriver.Chrome:
     options.add_argument("--allow-running-insecure-content")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
-    options.add_argument("--headless=new")  # Headless режим для CI
+    options.add_argument("--headless=new")
     
     # Случайный User-Agent
     ua = UserAgent()
@@ -390,6 +390,22 @@ def publish_post(driver, post_folder: Path, email: str, password: str, state: di
         return False
 
 
+def get_all_posts() -> List[Path]:
+    """Получает список всех папок с постами"""
+    if not POSTS_DIR.exists():
+        logger.warning(f"⚠️ Папка с постами {POSTS_DIR} не существует")
+        return []
+    
+    posts = [p for p in POSTS_DIR.iterdir() if p.is_dir()]
+    logger.info(f"📊 Найдено папок в {POSTS_DIR}: {len(posts)}")
+    
+    # Показываем первые 5 папок для отладки
+    if posts:
+        logger.info(f"   Примеры: {', '.join([p.name[:50] for p in posts[:5]])}")
+    
+    return posts
+
+
 def main():
     """Главная функция"""
     logger.info("=" * 60)
@@ -404,19 +420,11 @@ def main():
         logger.info("   Добавьте секреты: SITE_EMAIL и SITE_PASSWORD")
         sys.exit(1)
 
-    # Проверяем наличие папки с постами
-    if not POSTS_DIR.exists():
-        logger.warning(f"⚠️ Папка с постами {POSTS_DIR} не существует. Создаем...")
-        POSTS_DIR.mkdir(parents=True, exist_ok=True)
-        logger.info("📭 Нет постов для публикации.")
-        return
-
-    # Ищем папки с постами
-    all_posts = sorted([p for p in POSTS_DIR.iterdir() if p.is_dir()])
-    logger.info(f"📊 Найдено папок в {POSTS_DIR}: {len(all_posts)}")
-
+    # Получаем все посты
+    all_posts = get_all_posts()
+    
     if not all_posts:
-        logger.info("📭 Нет новых постов для публикации.")
+        logger.info("📭 Нет постов для публикации.")
         return
 
     # Загружаем состояние
@@ -429,8 +437,11 @@ def main():
         title, _, _ = parse_post_file(post)
         if title and not is_already_published(title, state):
             new_posts.append(post)
+            logger.info(f"   ✅ Новый пост: {title[:50]}...")
+        elif title:
+            logger.info(f"   ⏭️ Уже опубликован: {title[:50]}...")
 
-    logger.info(f"📊 Новых постов к публикации: {len(new_posts)} (макс. {MAX_PUBLISH_PER_DAY}/день)")
+    logger.info(f"\n📊 Новых постов к публикации: {len(new_posts)} (макс. {MAX_PUBLISH_PER_DAY}/день)")
 
     if not new_posts:
         logger.info("📭 Нет новых постов для публикации.")
