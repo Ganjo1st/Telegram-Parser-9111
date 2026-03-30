@@ -1,51 +1,60 @@
-name: 02 - Publish to 9111.ru
+name: Publish to 9111.ru
 
 on:
+  workflow_dispatch:
   schedule:
-    - cron: '0 10 * * *'  # Каждый день в 10:00 UTC
-  workflow_dispatch:      # Ручной запуск
+    - cron: '*/30 * * * *'  # Каждые 30 минут
 
 jobs:
   publish:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
+    runs-on: ubuntu-24.04
     steps:
-      - name: Checkout repository
+      - name: Checkout code
         uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          fetch-depth: 1
-          # Получаем последний коммит с постами
-          ref: main
-
-      - name: Set up Python
+      
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
+      
       - name: Install dependencies
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
-
-      - name: Debug - List files in data/posts
+      
+      - name: Install Chrome
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y google-chrome-stable
+          google-chrome --version
+      
+      - name: Show posts folder
         run: |
           echo "=== Содержимое data/posts ==="
           ls -la data/posts/ || echo "Папка пуста или не существует"
           echo "=== Количество папок ==="
           find data/posts -type d | wc -l || echo "0"
-
-      - name: Run Publisher (Selenium)
+      
+      - name: Run publisher
         env:
           SITE_EMAIL: ${{ secrets.SITE_EMAIL }}
           SITE_PASSWORD: ${{ secrets.SITE_PASSWORD }}
-        run: python publisher.py
-
-      - name: Commit and push changes (published state)
+        run: python src/publisher.py
+      
+      - name: Commit and push published state
         run: |
           git config --local user.name "github-actions[bot]"
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git add data/posts/ published/ publisher_state.json || true
-          git diff --quiet && git diff --staged --quiet || git commit -m "Update published state $(date +'%Y-%m-%d')" || true
-          git push
+          git diff --quiet && git diff --staged --quiet || git commit -m "Update published state $(date +'%Y-%m-%d %H:%M')" || true
+          git push || true
+      
+      - name: Upload screenshots on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-screenshots
+          path: |
+            *.png
+            auth_error.png
+            publish_error.png
