@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 Standalone Publisher for 9111.ru with Selenium anti-detection.
+Uses proxies from Proctor repository.
 Runs in GitHub Actions. Publishes up to 8 posts per day.
 """
 
@@ -13,6 +14,7 @@ import random
 import shutil
 import hashlib
 import logging
+import subprocess
 from pathlib import Path
 from datetime import datetime, date
 from typing import Optional, Tuple, List
@@ -27,6 +29,8 @@ from selenium.webdriver.chrome.service import Service
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
 from webdriver_manager.chrome import ChromeDriverManager
 from fake_useragent import UserAgent
+import httpx
+import asyncio
 
 # ========== НАСТРОЙКИ ==========
 POSTS_DIR = Path("data/posts")
@@ -34,16 +38,90 @@ PUBLISHED_DIR = Path("published")
 STATE_FILE = Path("publisher_state.json")
 MAX_PUBLISH_PER_DAY = 8
 
+# Прокси из репозитория Proctor
+PROXY_SOURCES = {
+    'russia': 'https://raw.githubusercontent.com/Ganjo1st/Proctor/main/data/proxies_russia.txt',
+    'global': 'https://raw.githubusercontent.com/Ganjo1st/Proctor/main/data/proxies_global.txt'
+}
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 
-# ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
-def setup_driver() -> webdriver.Chrome:
-    """Настройка ChromeDriver с антидетект-опциями"""
+# ========== ПРОКСИ-ФУНКЦИИ ==========
+def download_proxies() -> List[str]:
+    """Скачивает прокси из репозитория Proctor"""
+    all_proxies = []
+    
+    for source_name, url in PROXY_SOURCES.items():
+        try:
+            logger.info(f"📡 Загрузка {source_name} прокси...")
+            response = httpx.get(url, timeout=15)
+            if response.status_code == 200:
+                proxies = [p.strip() for p in response.text.splitlines() if p.strip() and not p.startswith('#')]
+                all_proxies.extend(proxies)
+                logger.info(f"   ✅ Загружено {len(proxies)} прокси")
+            else:
+                logger.warning(f"   ⚠️ Ошибка {response.status_code}")
+        except Exception as e:
+            logger.warning(f"   ⚠️ Ошибка: {e}")
+    
+    unique_proxies = list(dict.fromkeys(all_proxies))
+    logger.info(f"📊 Всего уникальных прокси: {len(unique_proxies)}")
+    return unique_proxies
+
+
+def test_proxy(proxy: str, timeout: int = 10) -> bool:
+    """Проверяет, работает ли прокси для доступа к 9111.ru"""
+    try:
+        proxy_url = proxy
+        if not proxy_url.startswith(('http://', 'socks5://', 'socks4://')):
+            proxy_url = f"http://{proxy_url}"
+        
+        # Используем httpx для быстрой проверки
+        transport = httpx.HTTPTransport(proxy=proxy_url)
+        with httpx.Client(transport=transport, timeout=timeout) as client:
+            response = client.get("https://9111.ru", follow_redirects=True)
+            # Проверяем, что получили HTML, а не страницу блокировки
+            if response.status_code == 200 and len(response.text) > 1000:
+                # Проверяем, что нет явных признаков блокировки
+                if "Access Denied" not in response.text and "blocked" not in response.text.lower():
+                    return True
+        return False
+    except Exception:
+        return False
+
+
+def get_working_proxy() -> Optional[str]:
+    """Возвращает первый работающий прокси"""
+    logger.info("🔍 Поиск рабочего прокси...")
+    
+    proxies = download_proxies()
+    
+    if not proxies:
+        logger.warning("⚠️ Нет прокси, работаем без прокси")
+        return None
+    
+    # Перемешиваем для равномерной нагрузки
+    random.shuffle(proxies)
+    
+    # Проверяем первые 20 прокси (чтобы не тратить много времени)
+    for proxy in proxies[:20]:
+        logger.info(f"   Проверяем: {proxy}")
+        if test_proxy(proxy):
+            logger.info(f"   ✅ Найден рабочий прокси: {proxy}")
+            return proxy
+        logger.info(f"   ❌ Не работает")
+    
+    logger.warning("⚠️ Нет рабочих прокси, работаем без прокси")
+    return None
+
+
+def setup_driver_with_proxy(proxy: Optional[str] = None) -> webdriver.Chrome:
+    """Настройка ChromeDriver с поддержкой прокси"""
     options = Options()
     
-    # Маскировка автоматизации
+    # === МАСКИРОВКА АВТОМАТИЗАЦИИ ===
     options.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
     options.add_experimental_option('useAutomationExtension', False)
     options.add_argument("--disable-blink-features=AutomationControlled")
@@ -55,23 +133,49 @@ def setup_driver() -> webdriver.Chrome:
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--headless=new")
+    options.add_argument("--disable-gpu")
     
     # Случайный User-Agent
     ua = UserAgent()
     options.add_argument(f"--user-agent={ua.random}")
     
     # Случайный размер окна
-    sizes = [(1920, 1080), (1366, 768), (1536, 864), (1440, 900)]
+    sizes = [(1920, 1080), (1366, 768), (1536, 864), (1440, 900), (1280, 720)]
     width, height = random.choice(sizes)
     options.add_argument(f"--window-size={width},{height}")
     
+    # === ПРОКСИ ===
+    if proxy:
+        proxy_url = proxy
+        if not proxy_url.startswith(('http://', 'socks5://', 'socks4://')):
+            proxy_url = f"http://{proxy_url}"
+        
+        # Для SOCKS5 нужна специальная настройка
+        if proxy_url.startswith('socks5://'):
+            options.add_argument(f'--proxy-server={proxy_url}')
+            logger.info(f"🔌 Используем SOCKS5 прокси: {proxy}")
+        elif proxy_url.startswith('socks4://'):
+            options.add_argument(f'--proxy-server={proxy_url}')
+            logger.info(f"🔌 Используем SOCKS4 прокси: {proxy}")
+        else:
+            options.add_argument(f'--proxy-server={proxy_url}')
+            logger.info(f"🔌 Используем HTTP прокси: {proxy}")
+    
+    # === ЗАПУСК ===
     service = Service(ChromeDriverManager().install())
     driver = webdriver.Chrome(service=service, options=options)
+    
+    # Убираем следы автоматизации
     driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+    
+    # Дополнительная маскировка
+    driver.execute_script("Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3,4,5]})")
+    driver.execute_script("Object.defineProperty(navigator, 'languages', {get: () => ['ru-RU', 'ru']})")
     
     return driver
 
 
+# ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
 def human_type(element, text, min_delay=0.07, max_delay=0.2):
     """Печатает текст как человек"""
     for char in text:
@@ -118,6 +222,7 @@ def generate_tags(text: str) -> str:
     if "китай" in text_lower: tags.append("китай")
     if "сша" in text_lower or "америк" in text_lower: tags.append("сша")
     if "израиль" in text_lower: tags.append("израиль")
+    if "куба" in text_lower: tags.append("куба")
     return ", ".join(list(dict.fromkeys(tags))[:5])
 
 
@@ -216,10 +321,11 @@ def login_to_9111(driver, email: str, password: str) -> bool:
         driver.get("https://9111.ru/")
         random_sleep(3, 5)
 
-        # Кнопка входа
+        # Ищем кнопку входа
         login_btn = WebDriverWait(driver, 15).until(
             EC.element_to_be_clickable((By.CLASS_NAME, "login-button"))
         )
+        random_mouse_move(driver)
         login_btn.click()
         random_sleep(2, 4)
 
@@ -236,6 +342,7 @@ def login_to_9111(driver, email: str, password: str) -> bool:
         password_btn = WebDriverWait(driver, 10).until(
             EC.element_to_be_clickable((By.XPATH, "//span[contains(text(), 'Войти по паролю')]"))
         )
+        random_mouse_move(driver)
         password_btn.click()
         random_sleep(2, 3)
 
@@ -252,6 +359,7 @@ def login_to_9111(driver, email: str, password: str) -> bool:
         submit_btn = WebDriverWait(driver, 10).until(
             EC.element_to_be_clickable((By.XPATH, "//input[@type='submit' and @value='Войти']"))
         )
+        random_mouse_move(driver)
         submit_btn.click()
         random_sleep(5, 7)
 
@@ -260,6 +368,12 @@ def login_to_9111(driver, email: str, password: str) -> bool:
         
     except Exception as e:
         logger.error(f"   ❌ Ошибка авторизации: {e}")
+        # Делаем скриншот для диагностики
+        try:
+            driver.save_screenshot("auth_error.png")
+            logger.info("   📸 Скриншот сохранен как auth_error.png")
+        except:
+            pass
         return False
 
 
@@ -344,6 +458,7 @@ def publish_post(driver, post_folder: Path, email: str, password: str, state: di
             rubric.click()
             random_sleep(1, 2)
             driver.find_element(By.XPATH, "//option[contains(text(), 'Новости')]").click()
+            logger.info("   ✅ Выбрана рубрика 'Новости'")
         except:
             pass
         random_sleep(2, 3)
@@ -380,6 +495,7 @@ def publish_post(driver, post_folder: Path, email: str, password: str, state: di
         publish_btn = WebDriverWait(driver, 15).until(
             EC.element_to_be_clickable((By.ID, "button_create_pubs"))
         )
+        random_mouse_move(driver)
         publish_btn.click()
         random_sleep(8, 12)
 
@@ -397,6 +513,12 @@ def publish_post(driver, post_folder: Path, email: str, password: str, state: di
 
     except Exception as e:
         logger.error(f"   ❌ Ошибка публикации: {e}")
+        # Делаем скриншот для диагностики
+        try:
+            driver.save_screenshot("publish_error.png")
+            logger.info("   📸 Скриншот сохранен как publish_error.png")
+        except:
+            pass
         return False
 
 
@@ -420,7 +542,7 @@ def get_all_posts() -> List[Path]:
 def main():
     """Главная функция"""
     logger.info("=" * 60)
-    logger.info("🚀 ЗАПУСК ПУБЛИКАТОРА (без прокси, автономный режим)")
+    logger.info("🚀 ЗАПУСК ПУБЛИКАТОРА (с прокси из Proctor)")
     logger.info("=" * 60)
 
     email = os.getenv("SITE_EMAIL")
@@ -456,8 +578,11 @@ def main():
         logger.info("📭 Нет новых постов для публикации.")
         return
 
-    # Запускаем браузер
-    driver = setup_driver()
+    # Получаем рабочий прокси
+    proxy = get_working_proxy()
+
+    # Запускаем браузер с прокси
+    driver = setup_driver_with_proxy(proxy)
 
     published_count = 0
     try:
@@ -468,10 +593,17 @@ def main():
 
             if publish_post(driver, post_folder, email, password, state):
                 published_count += 1
-                # Пауза между публикациями
-                pause = random.randint(60, 120)
+                # Пауза между публикациями (2-5 минут, чтобы не спамить)
+                pause = random.randint(120, 300)
                 logger.info(f"⏳ Пауза {pause} сек перед следующим постом...")
                 time.sleep(pause)
+            else:
+                # Если пост не опубликовался, пробуем сменить прокси
+                logger.warning("   🔄 Пробуем сменить прокси...")
+                driver.quit()
+                proxy = get_working_proxy()
+                driver = setup_driver_with_proxy(proxy)
+                time.sleep(10)
 
         logger.info(f"\n📊 ИТОГИ: Опубликовано {published_count} новых постов.")
     finally:
