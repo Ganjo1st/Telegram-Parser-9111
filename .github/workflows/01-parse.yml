@@ -23,7 +23,9 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
 
       - name: Run Telegram Parser
         env:
@@ -41,5 +43,5 @@ jobs:
           git config --local user.name "github-actions[bot]"
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git add data/posts/ data/last_id.txt
-          git diff --quiet && git diff --staged --quiet || git commit -m "Update posts from Telegram" || true
+          git diff --quiet && git diff --staged --quiet || git commit -m "Update posts from Telegram $(date +'%Y-%m-%d %H:%M:%S')" || true
           git push
