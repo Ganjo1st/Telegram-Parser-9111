@@ -16,7 +16,7 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 1
-          # Важно: получаем последнюю версию с новыми постами
+          # Получаем последний коммит с постами
           ref: main
 
       - name: Set up Python
@@ -29,6 +29,13 @@ jobs:
           pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Debug - List files in data/posts
+        run: |
+          echo "=== Содержимое data/posts ==="
+          ls -la data/posts/ || echo "Папка пуста или не существует"
+          echo "=== Количество папок ==="
+          find data/posts -type d | wc -l || echo "0"
+
       - name: Run Publisher (Selenium)
         env:
           SITE_EMAIL: ${{ secrets.SITE_EMAIL }}
@@ -39,7 +46,6 @@ jobs:
         run: |
           git config --local user.name "github-actions[bot]"
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
-          # Добавляем все измененные файлы
           git add data/posts/ published/ publisher_state.json || true
           git diff --quiet && git diff --staged --quiet || git commit -m "Update published state $(date +'%Y-%m-%d')" || true
           git push
