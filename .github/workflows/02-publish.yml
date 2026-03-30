@@ -16,6 +16,8 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 1
+          # Важно: получаем последнюю версию с новыми постами
+          ref: main
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -37,6 +39,7 @@ jobs:
         run: |
           git config --local user.name "github-actions[bot]"
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
-          git add published/ publisher_state.json
+          # Добавляем все измененные файлы
+          git add data/posts/ published/ publisher_state.json || true
           git diff --quiet && git diff --staged --quiet || git commit -m "Update published state $(date +'%Y-%m-%d')" || true
           git push
