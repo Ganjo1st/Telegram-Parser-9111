@@ -10,9 +10,16 @@ venv/
 env/
 ENV/
 
-# Session files
-# Data files
-!data/.gitkeep
+# Session files - РАЗРЕШАЕМ (сессия нужна для работы)
+# sessions/ - НЕ ИГНОРИРУЕМ!
+
+# Data files - посты не коммитим, но папку сохраняем
+data/posts/*
+!data/posts/.gitkeep
+
+# Published posts - коммитим состояние, но не сами посты
+published/*
+!published/.gitkeep
 
 # Environment variables
 .env
