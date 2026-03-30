@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 Standalone Publisher for 9111.ru with Selenium anti-detection.
-Runs in GitHub Actions.
+Runs in GitHub Actions. Publishes up to 8 posts per day.
 """
 
 import os
@@ -28,18 +28,22 @@ from webdriver_manager.chrome import ChromeDriverManager
 from fake_useragent import UserAgent
 
 # ========== НАСТРОЙКИ ==========
-POSTS_DIR = Path("data/posts")
-PUBLISHED_DIR = Path("published")
-STATE_FILE = Path("publisher_state.json")
-MAX_PUBLISH_PER_DAY = 8
+POSTS_DIR = Path("data/posts")                 # Папка с новыми постами от парсера
+PUBLISHED_DIR = Path("published")              # Папка для успешно опубликованных
+STATE_FILE = Path("publisher_state.json")      # Файл состояния
+MAX_PUBLISH_PER_DAY = 8                        # Максимум публикаций в день
 
+# Настройка логирования
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
 
 # ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
 def setup_driver() -> webdriver.Chrome:
     """Настройка ChromeDriver с антидетект-опциями"""
     options = Options()
+    
+    # Маскировка автоматизации
     options.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
     options.add_experimental_option('useAutomationExtension', False)
     options.add_argument("--disable-blink-features=AutomationControlled")
@@ -50,29 +54,44 @@ def setup_driver() -> webdriver.Chrome:
     options.add_argument("--allow-running-insecure-content")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
-    options.add_argument("--headless=new")
-
+    options.add_argument("--headless=new")  # Headless режим для CI
+    
+    # Случайный User-Agent
     ua = UserAgent()
     options.add_argument(f"--user-agent={ua.random}")
-
+    
+    # Случайный размер окна
     sizes = [(1920, 1080), (1366, 768), (1536, 864), (1440, 900)]
     width, height = random.choice(sizes)
     options.add_argument(f"--window-size={width},{height}")
-
+    
+    # Запуск драйвера
     service = Service(ChromeDriverManager().install())
     driver = webdriver.Chrome(service=service, options=options)
+    
+    # Убираем следы автоматизации
     driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+    
     return driver
 
+
 def human_type(element, text, min_delay=0.07, max_delay=0.2):
+    """Печатает текст как человек"""
     for char in text:
         element.send_keys(char)
-        time.sleep(random.uniform(min_delay, max_delay))
+        if random.random() < 0.1:
+            time.sleep(random.uniform(0.2, 0.5))
+        else:
+            time.sleep(random.uniform(min_delay, max_delay))
+
 
 def random_sleep(min_sec=2, max_sec=5):
+    """Случайная пауза"""
     time.sleep(random.uniform(min_sec, max_sec))
 
+
 def random_mouse_move(driver):
+    """Имитирует движение мыши"""
     try:
         action = ActionChains(driver)
         action.move_by_offset(random.randint(-100, 100), random.randint(-80, 80))
@@ -81,16 +100,28 @@ def random_mouse_move(driver):
     except:
         pass
 
+
 def generate_tags(text: str) -> str:
+    """Генерирует теги на основе текста"""
     tags = ["новости", "россия", "мир"]
     text_lower = text.lower()
-    if "иран" in text_lower: tags.append("иран")
-    if "европ" in text_lower: tags.append("европа")
-    if "росси" in text_lower: tags.append("россия")
-    if "война" in text_lower: tags.append("конфликт")
+    if "иран" in text_lower:
+        tags.append("иран")
+    if "европ" in text_lower:
+        tags.append("европа")
+    if "росси" in text_lower:
+        tags.append("россия")
+    if "война" in text_lower:
+        tags.append("конфликт")
+    if "китай" in text_lower:
+        tags.append("китай")
+    if "сша" in text_lower or "америк" in text_lower:
+        tags.append("сша")
     return ", ".join(list(dict.fromkeys(tags))[:5])
 
+
 def load_state() -> dict:
+    """Загружает состояние публикаций из JSON-файла"""
     if STATE_FILE.exists():
         try:
             with open(STATE_FILE, 'r', encoding='utf-8') as f:
@@ -99,11 +130,15 @@ def load_state() -> dict:
             pass
     return {"published_titles": [], "last_reset_date": None}
 
+
 def save_state(state: dict):
+    """Сохраняет состояние публикаций"""
     with open(STATE_FILE, 'w', encoding='utf-8') as f:
         json.dump(state, f, ensure_ascii=False, indent=2)
 
-def reset_daily_counter(state: dict):
+
+def reset_daily_counter(state: dict) -> dict:
+    """Сбрасывает счетчик публикаций, если наступил новый день"""
     today = date.today().isoformat()
     if state.get("last_reset_date") != today:
         state["published_titles"] = []
@@ -111,17 +146,23 @@ def reset_daily_counter(state: dict):
         logger.info("📅 Ежедневный счетчик сброшен.")
     return state
 
+
 def can_publish_today(state: dict) -> bool:
+    """Проверяет, не превышен ли лимит публикаций за день"""
     return len(state.get("published_titles", [])) < MAX_PUBLISH_PER_DAY
 
+
 def is_already_published(title: str, state: dict) -> bool:
+    """Проверяет, был ли заголовок опубликован ранее"""
     title_hash = hashlib.md5(title.encode('utf-8')).hexdigest()
     for item in state.get("published_titles", []):
         if item.get("hash") == title_hash:
             return True
     return False
 
+
 def mark_as_published(title: str, state: dict):
+    """Добавляет заголовок в список опубликованных"""
     state["published_titles"].append({
         "title": title,
         "hash": hashlib.md5(title.encode('utf-8')).hexdigest(),
@@ -129,7 +170,9 @@ def mark_as_published(title: str, state: dict):
     })
     save_state(state)
 
+
 def parse_post_file(post_folder: Path) -> Tuple[Optional[str], Optional[str], Optional[Path]]:
+    """Читает файл поста и извлекает заголовок, текст и изображение"""
     text_file = post_folder / "text.txt"
     if not text_file.exists():
         return None, None, None
@@ -137,11 +180,14 @@ def parse_post_file(post_folder: Path) -> Tuple[Optional[str], Optional[str], Op
     with open(text_file, 'r', encoding='utf-8') as f:
         content = f.read()
 
+    # Первая непустая строка — заголовок
     lines = [line.strip() for line in content.split('\n') if line.strip()]
     if not lines:
         return None, None, None
 
     title = lines[0]
+    
+    # Очищаем заголовок от эмодзи
     import re
     emoji_pattern = re.compile("["
         u"\U0001F600-\U0001F64F"
@@ -154,20 +200,25 @@ def parse_post_file(post_folder: Path) -> Tuple[Optional[str], Optional[str], Op
     post_text = "\n".join(lines[1:]) if len(lines) > 1 else ""
     images = list(post_folder.glob("image.*"))
     image_path = images[0] if images else None
+
     return title, post_text, image_path
 
+
 def login_to_9111(driver, email: str, password: str) -> bool:
+    """Выполняет вход на сайт с имитацией человеческого поведения"""
     logger.info("   🔑 Авторизация...")
     try:
         driver.get("https://9111.ru/")
         random_sleep(3, 5)
 
+        # Кнопка входа
         login_btn = WebDriverWait(driver, 15).until(
             EC.element_to_be_clickable((By.CLASS_NAME, "login-button"))
         )
         login_btn.click()
         random_sleep(2, 4)
 
+        # Поле email
         email_input = WebDriverWait(driver, 10).until(
             EC.presence_of_element_located((By.NAME, "email"))
         )
@@ -176,12 +227,14 @@ def login_to_9111(driver, email: str, password: str) -> bool:
         human_type(email_input, email)
         random_sleep(1, 2)
 
+        # Кнопка "Войти по паролю"
         password_btn = WebDriverWait(driver, 10).until(
             EC.element_to_be_clickable((By.XPATH, "//span[contains(text(), 'Войти по паролю')]"))
         )
         password_btn.click()
         random_sleep(2, 3)
 
+        # Поле пароля
         password_input = WebDriverWait(driver, 10).until(
             EC.presence_of_element_located((By.NAME, "password"))
         )
@@ -190,18 +243,22 @@ def login_to_9111(driver, email: str, password: str) -> bool:
         human_type(password_input, password)
         random_sleep(1, 2)
 
+        # Кнопка отправки
         submit_btn = WebDriverWait(driver, 10).until(
             EC.element_to_be_clickable((By.XPATH, "//input[@type='submit' and @value='Войти']"))
         )
         submit_btn.click()
         random_sleep(5, 7)
 
+        # Проверяем успешность входа
         return len(driver.find_elements(By.CLASS_NAME, "userMenuOpen")) > 0
     except Exception as e:
         logger.error(f"   ❌ Ошибка авторизации: {e}")
         return False
 
+
 def upload_image(driver, image_path: Path) -> bool:
+    """Загружает изображение через кнопку '+ Фото'"""
     try:
         photo_label = WebDriverWait(driver, 15).until(
             EC.element_to_be_clickable((By.XPATH, "//label[contains(@class, 'lite_editor_tools_btn') and contains(text(), '+ Фото')]"))
@@ -219,34 +276,40 @@ def upload_image(driver, image_path: Path) -> bool:
         logger.warning(f"   ⚠️ Ошибка загрузки фото: {e}")
         return False
 
+
 def publish_post(driver, post_folder: Path, email: str, password: str, state: dict) -> bool:
+    """Публикует один пост"""
     logger.info(f"\n📂 Пост: {post_folder.name}")
 
     title, post_text, image_path = parse_post_file(post_folder)
     if not title or not post_text:
-        logger.warning("   ⚠️ Не удалось прочитать пост")
+        logger.warning("   ⚠️ Не удалось прочитать пост (нет заголовка или текста)")
         return False
 
     if is_already_published(title, state):
-        logger.info(f"   ⏭️ Уже опубликован")
+        logger.info(f"   ⏭️ Заголовок уже опубликован")
         return False
 
     if not can_publish_today(state):
-        logger.warning(f"   ⏸️ Лимит {MAX_PUBLISH_PER_DAY}/день")
+        logger.warning(f"   ⏸️ Достигнут лимит публикаций за день ({MAX_PUBLISH_PER_DAY})")
         return False
 
     logger.info(f"   📝 Публикуем: {title[:50]}...")
 
     try:
+        # Переходим на страницу создания публикации
         driver.get("https://9111.ru/pubs/add/")
         random_sleep(4, 6)
 
+        # Проверяем авторизацию
         if len(driver.find_elements(By.CLASS_NAME, "userMenuOpen")) == 0:
             if not login_to_9111(driver, email, password):
+                logger.error("   ❌ Не удалось авторизоваться")
                 return False
             driver.get("https://9111.ru/pubs/add/")
             random_sleep(3, 5)
 
+        # Выбор категории "Новость, статья"
         news_link = WebDriverWait(driver, 15).until(
             EC.element_to_be_clickable((By.XPATH, "//a[contains(text(), 'Новость, статья')]"))
         )
@@ -255,6 +318,7 @@ def publish_post(driver, post_folder: Path, email: str, password: str, state: di
         driver.execute_script("arguments[0].click();", news_link)
         random_sleep(3, 5)
 
+        # Заголовок
         title_input = WebDriverWait(driver, 20).until(
             EC.presence_of_element_located((By.ID, "topic_name"))
         )
@@ -263,9 +327,11 @@ def publish_post(driver, post_folder: Path, email: str, password: str, state: di
         human_type(title_input, title)
         random_sleep(2, 4)
 
-        # Выбор рубрики
+        # Выбор рубрики (если требуется)
         try:
-            rubric = WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.ID, "rubric_id2")))
+            rubric = WebDriverWait(driver, 10).until(
+                EC.element_to_be_clickable((By.ID, "rubric_id2"))
+            )
             rubric.click()
             random_sleep(1, 2)
             driver.find_element(By.XPATH, "//option[contains(text(), 'Новости')]").click()
@@ -273,20 +339,25 @@ def publish_post(driver, post_folder: Path, email: str, password: str, state: di
             pass
         random_sleep(2, 3)
 
+        # Текст поста
         editor = WebDriverWait(driver, 10).until(
             EC.presence_of_element_located((By.ID, "lite_editor_container"))
         )
         editor.click()
         driver.execute_script("arguments[0].innerHTML = '';", editor)
-        for p in post_text.split('\n'):
-            if p.strip():
-                driver.execute_script(f"arguments[0].innerHTML += '<p>{p.strip()}</p>';", editor)
+
+        for paragraph in post_text.split('\n'):
+            if paragraph.strip():
+                driver.execute_script(f"arguments[0].innerHTML += '<p>{paragraph.strip()}</p>';", editor)
                 random_sleep(0.2, 0.5)
+
         random_sleep(3, 5)
 
+        # Загрузка изображения
         if image_path and image_path.exists():
             upload_image(driver, image_path)
 
+        # Теги
         tags_input = WebDriverWait(driver, 10).until(
             EC.presence_of_element_located((By.ID, "tag_list_input"))
         )
@@ -295,65 +366,97 @@ def publish_post(driver, post_folder: Path, email: str, password: str, state: di
         human_type(tags_input, generate_tags(post_text))
         random_sleep(2, 4)
 
+        # Публикация
         publish_btn = WebDriverWait(driver, 15).until(
             EC.element_to_be_clickable((By.ID, "button_create_pubs"))
         )
         publish_btn.click()
         random_sleep(8, 12)
 
+        # Отмечаем как опубликованное
         mark_as_published(title, state)
         logger.info(f"   🎉 Опубликовано!")
+
+        # Перемещаем папку с постом в архив
         PUBLISHED_DIR.mkdir(exist_ok=True)
-        shutil.move(str(post_folder), str(PUBLISHED_DIR / post_folder.name))
+        dest = PUBLISHED_DIR / post_folder.name
+        shutil.move(str(post_folder), str(dest))
+        logger.info(f"   📦 Пост перемещен в {PUBLISHED_DIR}")
+
         return True
 
     except Exception as e:
-        logger.error(f"   ❌ Ошибка: {e}")
+        logger.error(f"   ❌ Ошибка публикации: {e}")
         return False
 
+
 def main():
+    """Главная функция"""
     logger.info("=" * 60)
-    logger.info("🚀 ЗАПУСК ПУБЛИКАТОРА (без прокси)")
+    logger.info("🚀 ЗАПУСК ПУБЛИКАТОРА (без прокси, автономный режим)")
     logger.info("=" * 60)
 
     email = os.getenv("SITE_EMAIL")
     password = os.getenv("SITE_PASSWORD")
+
     if not email or not password:
-        logger.error("❌ Нет SITE_EMAIL / SITE_PASSWORD")
+        logger.error("❌ Не найдены учетные данные SITE_EMAIL / SITE_PASSWORD в секретах GitHub")
+        logger.info("   Добавьте секреты: SITE_EMAIL и SITE_PASSWORD")
         sys.exit(1)
 
-    if not POSTS_DIR.exists() or not any(POSTS_DIR.iterdir()):
+    # Проверяем наличие папки с постами
+    if not POSTS_DIR.exists():
+        logger.warning(f"⚠️ Папка с постами {POSTS_DIR} не существует. Создаем...")
+        POSTS_DIR.mkdir(parents=True, exist_ok=True)
         logger.info("📭 Нет постов для публикации.")
         return
 
+    # Ищем папки с постами
+    all_posts = sorted([p for p in POSTS_DIR.iterdir() if p.is_dir()])
+    logger.info(f"📊 Найдено папок в {POSTS_DIR}: {len(all_posts)}")
+
+    if not all_posts:
+        logger.info("📭 Нет новых постов для публикации.")
+        return
+
+    # Загружаем состояние
     state = load_state()
     state = reset_daily_counter(state)
 
-    all_posts = sorted([p for p in POSTS_DIR.iterdir() if p.is_dir()])
+    # Фильтруем новые посты
     new_posts = []
     for post in all_posts:
         title, _, _ = parse_post_file(post)
         if title and not is_already_published(title, state):
             new_posts.append(post)
 
-    logger.info(f"📊 Найдено новых постов: {len(new_posts)} (лимит {MAX_PUBLISH_PER_DAY}/день)")
+    logger.info(f"📊 Новых постов к публикации: {len(new_posts)} (макс. {MAX_PUBLISH_PER_DAY}/день)")
 
     if not new_posts:
-        logger.info("📭 Нет новых постов.")
+        logger.info("📭 Нет новых постов для публикации.")
         return
 
+    # Запускаем браузер
     driver = setup_driver()
-    published = 0
-    for post in new_posts:
-        if not can_publish_today(state):
-            logger.warning("⏸️ Достигнут лимит на сегодня.")
-            break
-        if publish_post(driver, post, email, password, state):
-            published += 1
-            time.sleep(random.randint(60, 120))
 
-    logger.info(f"\n📊 ИТОГИ: Опубликовано {published} постов.")
-    driver.quit()
+    published_count = 0
+    try:
+        for post_folder in new_posts:
+            if not can_publish_today(state):
+                logger.warning(f"⏸️ Достигнут лимит в {MAX_PUBLISH_PER_DAY} публикаций на сегодня.")
+                break
+
+            if publish_post(driver, post_folder, email, password, state):
+                published_count += 1
+                # Пауза между публикациями
+                pause = random.randint(60, 120)
+                logger.info(f"⏳ Пауза {pause} сек перед следующим постом...")
+                time.sleep(pause)
+
+        logger.info(f"\n📊 ИТОГИ: Опубликовано {published_count} новых постов.")
+    finally:
+        driver.quit()
+
 
 if __name__ == "__main__":
     main()
