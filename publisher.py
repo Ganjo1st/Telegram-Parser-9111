@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 Standalone Publisher for 9111.ru with Selenium anti-detection.
-Uses proxies from Proctor repository.
+Uses cookies for authentication (more reliable than login form).
 Runs in GitHub Actions. Publishes up to 8 posts per day.
 """
 
@@ -34,8 +34,9 @@ import httpx
 POSTS_DIR = Path("data/posts")
 PUBLISHED_DIR = Path("published")
 STATE_FILE = Path("publisher_state.json")
+COOKIES_FILE = Path("cookies_9111.ru.txt")  # Файл с куками в формате Netscape
 MAX_PUBLISH_PER_DAY = 8
-MAX_PROXY_RETRIES = 3  # Максимум попыток с одним прокси
+MAX_PROXY_RETRIES = 2  # Максимум попыток с одним прокси
 
 # Прокси из репозитория Proctor
 PROXY_SOURCES = {
@@ -108,6 +109,35 @@ def find_working_proxy(proxies_list: List[str]) -> Optional[str]:
     return None
 
 
+def parse_cookies_netscape(cookies_file: Path) -> List[dict]:
+    """Парсит файл кук в формате Netscape"""
+    cookies = []
+    try:
+        with open(cookies_file, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#'):
+                    continue
+                
+                parts = line.split('\t')
+                if len(parts) >= 7:
+                    cookie = {
+                        'domain': parts[0],
+                        'httpOnly': parts[1] == 'TRUE',
+                        'path': parts[2],
+                        'secure': parts[3] == 'TRUE',
+                        'expiry': int(parts[4]) if parts[4] != '0' else None,
+                        'name': parts[5],
+                        'value': parts[6]
+                    }
+                    cookies.append(cookie)
+        logger.info(f"🍪 Загружено {len(cookies)} кук из {cookies_file}")
+        return cookies
+    except Exception as e:
+        logger.error(f"❌ Ошибка парсинга кук: {e}")
+        return []
+
+
 def setup_driver_with_proxy(proxy: Optional[str] = None) -> webdriver.Chrome:
     """Настройка ChromeDriver с поддержкой прокси"""
     options = Options()
@@ -154,6 +184,76 @@ def setup_driver_with_proxy(proxy: Optional[str] = None) -> webdriver.Chrome:
     driver.execute_script("Object.defineProperty(navigator, 'languages', {get: () => ['ru-RU', 'ru']})")
     
     return driver
+
+
+def login_with_cookies(driver, cookies_file: Path) -> bool:
+    """Авторизация через куки"""
+    logger.info("   🍪 Авторизация через куки...")
+    try:
+        # Сначала открываем главную страницу, чтобы установить домен
+        driver.get("https://9111.ru")
+        random_sleep(2, 3)
+        
+        # Парсим куки из файла
+        cookies = parse_cookies_netscape(cookies_file)
+        if not cookies:
+            logger.error("   ❌ Не удалось загрузить куки")
+            return False
+        
+        # Устанавливаем куки
+        for cookie in cookies:
+            try:
+                # Убираем expiry если его нет или он не числовой
+                cookie_dict = {
+                    'name': cookie['name'],
+                    'value': cookie['value'],
+                    'domain': cookie['domain'],
+                    'path': cookie['path'],
+                    'secure': cookie['secure']
+                }
+                if cookie['expiry'] and cookie['expiry'] > 0:
+                    cookie_dict['expiry'] = cookie['expiry']
+                
+                driver.add_cookie(cookie_dict)
+                logger.info(f"      ✅ Кука: {cookie['name']}")
+            except Exception as e:
+                logger.debug(f"      ⚠️ {cookie['name']}: {e}")
+        
+        # Обновляем страницу
+        driver.refresh()
+        random_sleep(3, 5)
+        
+        # Проверяем авторизацию
+        if check_authorization(driver):
+            logger.info("   ✅ Авторизация по кукам успешна!")
+            return True
+        else:
+            logger.error("   ❌ Авторизация по кукам не подтверждена")
+            return False
+            
+    except Exception as e:
+        logger.error(f"   ❌ Ошибка установки кук: {e}")
+        return False
+
+
+def check_authorization(driver) -> bool:
+    """Проверяет авторизацию по наличию элементов"""
+    try:
+        # Проверяем наличие userMenuOpen или других индикаторов авторизации
+        if len(driver.find_elements(By.CLASS_NAME, "userMenuOpen")) > 0:
+            return True
+        
+        # Проверяем наличие ссылки на профиль
+        if len(driver.find_elements(By.XPATH, "//a[contains(@href, '/profile/')]")) > 0:
+            return True
+        
+        # Проверяем наличие кнопки выхода
+        if len(driver.find_elements(By.XPATH, "//a[contains(text(), 'Выход')]")) > 0:
+            return True
+        
+        return False
+    except:
+        return False
 
 
 # ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
@@ -283,62 +383,6 @@ def parse_post_file(post_folder: Path) -> Tuple[Optional[str], Optional[str], Op
     return title, post_text, image_path
 
 
-def login_to_9111(driver, email: str, password: str) -> bool:
-    """Авторизация на сайте 9111.ru"""
-    logger.info("   🔑 Авторизация...")
-    try:
-        driver.get("https://9111.ru/")
-        random_sleep(3, 5)
-
-        login_btn = WebDriverWait(driver, 15).until(
-            EC.element_to_be_clickable((By.CLASS_NAME, "login-button"))
-        )
-        random_mouse_move(driver)
-        login_btn.click()
-        random_sleep(2, 4)
-
-        email_input = WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located((By.NAME, "email"))
-        )
-        email_input.click()
-        email_input.clear()
-        human_type(email_input, email)
-        random_sleep(1, 2)
-
-        password_btn = WebDriverWait(driver, 10).until(
-            EC.element_to_be_clickable((By.XPATH, "//span[contains(text(), 'Войти по паролю')]"))
-        )
-        random_mouse_move(driver)
-        password_btn.click()
-        random_sleep(2, 3)
-
-        password_input = WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located((By.NAME, "password"))
-        )
-        password_input.click()
-        password_input.clear()
-        human_type(password_input, password)
-        random_sleep(1, 2)
-
-        submit_btn = WebDriverWait(driver, 10).until(
-            EC.element_to_be_clickable((By.XPATH, "//input[@type='submit' and @value='Войти']"))
-        )
-        random_mouse_move(driver)
-        submit_btn.click()
-        random_sleep(5, 7)
-
-        return len(driver.find_elements(By.CLASS_NAME, "userMenuOpen")) > 0
-        
-    except Exception as e:
-        logger.error(f"   ❌ Ошибка авторизации: {e}")
-        try:
-            driver.save_screenshot("auth_error.png")
-            logger.info("   📸 Скриншот сохранен как auth_error.png")
-        except:
-            pass
-        return False
-
-
 def upload_image(driver, image_path: Path) -> bool:
     """Загружает изображение через кнопку '+ Фото'"""
     try:
@@ -359,8 +403,8 @@ def upload_image(driver, image_path: Path) -> bool:
         return False
 
 
-def publish_post(driver, post_folder: Path, email: str, password: str, state: dict) -> bool:
-    """Публикует один пост"""
+def publish_post(driver, post_folder: Path, state: dict) -> bool:
+    """Публикует один пост (используя уже установленные куки)"""
     logger.info(f"\n📂 Пост: {post_folder.name}")
 
     title, post_text, image_path = parse_post_file(post_folder)
@@ -379,16 +423,16 @@ def publish_post(driver, post_folder: Path, email: str, password: str, state: di
     logger.info(f"   📝 Публикуем: {title[:50]}...")
 
     try:
+        # Переходим на страницу выбора типа публикации
         driver.get("https://9111.ru/pubs/add/")
         random_sleep(4, 6)
 
-        if len(driver.find_elements(By.CLASS_NAME, "userMenuOpen")) == 0:
-            if not login_to_9111(driver, email, password):
-                logger.error("   ❌ Не удалось авторизоваться")
-                return False
-            driver.get("https://9111.ru/pubs/add/")
-            random_sleep(3, 5)
+        # Проверяем авторизацию
+        if not check_authorization(driver):
+            logger.error("   ❌ Нет авторизации. Куки недействительны.")
+            return False
 
+        # Выбираем "Новость, статья"
         news_link = WebDriverWait(driver, 15).until(
             EC.element_to_be_clickable((By.XPATH, "//a[contains(text(), 'Новость, статья')]"))
         )
@@ -397,6 +441,7 @@ def publish_post(driver, post_folder: Path, email: str, password: str, state: di
         driver.execute_script("arguments[0].click();", news_link)
         random_sleep(3, 5)
 
+        # Заголовок (contenteditable div)
         title_input = WebDriverWait(driver, 20).until(
             EC.presence_of_element_located((By.ID, "topic_name"))
         )
@@ -405,6 +450,7 @@ def publish_post(driver, post_folder: Path, email: str, password: str, state: di
         human_type(title_input, title)
         random_sleep(2, 4)
 
+        # Выбор рубрики
         try:
             rubric = WebDriverWait(driver, 10).until(
                 EC.element_to_be_clickable((By.ID, "rubric_id2"))
@@ -417,6 +463,7 @@ def publish_post(driver, post_folder: Path, email: str, password: str, state: di
             pass
         random_sleep(2, 3)
 
+        # Текст в редакторе
         editor = WebDriverWait(driver, 10).until(
             EC.presence_of_element_located((By.ID, "lite_editor_container"))
         )
@@ -430,9 +477,11 @@ def publish_post(driver, post_folder: Path, email: str, password: str, state: di
 
         random_sleep(3, 5)
 
+        # Загрузка изображения
         if image_path and image_path.exists():
             upload_image(driver, image_path)
 
+        # Теги
         tags_input = WebDriverWait(driver, 10).until(
             EC.presence_of_element_located((By.ID, "tag_list_input"))
         )
@@ -441,6 +490,7 @@ def publish_post(driver, post_folder: Path, email: str, password: str, state: di
         human_type(tags_input, generate_tags(post_text))
         random_sleep(2, 4)
 
+        # Публикация
         publish_btn = WebDriverWait(driver, 15).until(
             EC.element_to_be_clickable((By.ID, "button_create_pubs"))
         )
@@ -451,6 +501,7 @@ def publish_post(driver, post_folder: Path, email: str, password: str, state: di
         mark_as_published(title, state)
         logger.info(f"   🎉 Опубликовано!")
 
+        # Перемещаем папку с постом в архив
         PUBLISHED_DIR.mkdir(exist_ok=True)
         dest = PUBLISHED_DIR / post_folder.name
         shutil.move(str(post_folder), str(dest))
@@ -485,14 +536,13 @@ def get_all_posts() -> List[Path]:
 def main():
     """Главная функция"""
     logger.info("=" * 60)
-    logger.info("🚀 ЗАПУСК ПУБЛИКАТОРА (с прокси из Proctor)")
+    logger.info("🚀 ЗАПУСК ПУБЛИКАТОРА (авторизация по кукам)")
     logger.info("=" * 60)
 
-    email = os.getenv("SITE_EMAIL")
-    password = os.getenv("SITE_PASSWORD")
-
-    if not email or not password:
-        logger.error("❌ Не найдены SITE_EMAIL / SITE_PASSWORD")
+    # Проверяем наличие файла с куками
+    if not COOKIES_FILE.exists():
+        logger.error(f"❌ Файл с куками не найден: {COOKIES_FILE}")
+        logger.info("   Добавьте файл cookies_9111.ru.txt в корень репозитория")
         sys.exit(1)
 
     all_posts = get_all_posts()
@@ -520,18 +570,25 @@ def main():
         logger.info("📭 Нет новых постов.")
         return
 
-    # ========== ОПТИМИЗИРОВАННАЯ ЛОГИКА РАБОТЫ С ПРОКСИ ==========
-    # 1. Скачиваем список прокси один раз
+    # Скачиваем прокси
     all_proxies = download_proxies()
-    
-    # 2. Находим первый рабочий прокси
     current_proxy = find_working_proxy(all_proxies)
     
-    # 3. Запускаем драйвер с этим прокси
+    if not current_proxy:
+        logger.error("❌ Нет рабочих прокси. Публикация невозможна.")
+        return
+    
+    # Запускаем драйвер с прокси
     driver = setup_driver_with_proxy(current_proxy)
-    proxy_fail_count = 0
+    
+    # Авторизуемся через куки
+    if not login_with_cookies(driver, COOKIES_FILE):
+        logger.error("❌ Не удалось авторизоваться по кукам")
+        driver.quit()
+        return
     
     published_count = 0
+    proxy_fail_count = 0
     
     try:
         for i, post_folder in enumerate(new_posts, 1):
@@ -542,14 +599,12 @@ def main():
             logger.info(f"\n{'='*50}")
             logger.info(f"📌 Пост {i}/{len(new_posts)}")
             
-            # Публикуем пост
-            success = publish_post(driver, post_folder, email, password, state)
+            success = publish_post(driver, post_folder, state)
             
             if success:
                 published_count += 1
-                proxy_fail_count = 0  # Сбрасываем счетчик ошибок
+                proxy_fail_count = 0
                 
-                # Пауза между постами
                 if i < len(new_posts):
                     pause = random.randint(120, 300)  # 2-5 минут
                     logger.info(f"⏳ Пауза {pause} сек перед следующим постом...")
@@ -558,24 +613,24 @@ def main():
                 proxy_fail_count += 1
                 logger.warning(f"   ⚠️ Ошибка публикации (попытка {proxy_fail_count}/{MAX_PROXY_RETRIES})")
                 
-                # Если прокси перестал работать, пробуем сменить
                 if proxy_fail_count >= MAX_PROXY_RETRIES:
                     logger.info("   🔄 Смена прокси...")
                     driver.quit()
                     
-                    # Ищем новый прокси (исключая текущий)
                     available_proxies = [p for p in all_proxies if p != current_proxy]
                     current_proxy = find_working_proxy(available_proxies)
                     
                     if current_proxy:
                         driver = setup_driver_with_proxy(current_proxy)
+                        if not login_with_cookies(driver, COOKIES_FILE):
+                            logger.error("   ❌ Не удалось авторизоваться после смены прокси")
+                            break
                         proxy_fail_count = 0
                         logger.info("   ✅ Прокси сменен, продолжаем...")
                     else:
                         logger.error("   ❌ Нет рабочих прокси. Остановка.")
                         break
                 else:
-                    # Небольшая пауза перед повторной попыткой с тем же прокси
                     time.sleep(30)
         
         logger.info(f"\n📊 ИТОГИ: Опубликовано {published_count} из {len(new_posts)} новых постов.")
