@@ -36,7 +36,7 @@ PUBLISHED_DIR = Path("published")
 STATE_FILE = Path("publisher_state.json")
 COOKIES_FILE = Path("cookies_9111.ru.txt")  # Файл с куками в формате Netscape
 MAX_PUBLISH_PER_DAY = 8
-MAX_PROXY_RETRIES = 2  # Максимум попыток с одним прокси
+MAX_PROXY_RETRIES = 2
 
 # Прокси из репозитория Proctor
 PROXY_SOURCES = {
@@ -187,72 +187,33 @@ def setup_driver_with_proxy(proxy: Optional[str] = None) -> webdriver.Chrome:
 
 
 def login_with_cookies(driver, cookies_file: Path) -> bool:
-    """Авторизация через куки"""
+    """Авторизация через куки - сразу переходим на страницу публикации"""
     logger.info("   🍪 Авторизация через куки...")
     try:
-        # Сначала открываем главную страницу, чтобы установить домен
-        driver.get("https://9111.ru")
-        random_sleep(2, 3)
-        
-        # Парсим куки из файла
-        cookies = parse_cookies_netscape(cookies_file)
-        if not cookies:
-            logger.error("   ❌ Не удалось загрузить куки")
-            return False
-        
-        # Устанавливаем куки
-        for cookie in cookies:
-            try:
-                # Убираем expiry если его нет или он не числовой
-                cookie_dict = {
-                    'name': cookie['name'],
-                    'value': cookie['value'],
-                    'domain': cookie['domain'],
-                    'path': cookie['path'],
-                    'secure': cookie['secure']
-                }
-                if cookie['expiry'] and cookie['expiry'] > 0:
-                    cookie_dict['expiry'] = cookie['expiry']
-                
-                driver.add_cookie(cookie_dict)
-                logger.info(f"      ✅ Кука: {cookie['name']}")
-            except Exception as e:
-                logger.debug(f"      ⚠️ {cookie['name']}: {e}")
-        
-        # Обновляем страницу
-        driver.refresh()
+        # Сразу идем на страницу публикации (там проще проверить авторизацию)
+        driver.get("https://9111.ru/pubs/add/")
         random_sleep(3, 5)
         
-        # Проверяем авторизацию
-        if check_authorization(driver):
-            logger.info("   ✅ Авторизация по кукам успешна!")
-            return True
-        else:
-            logger.error("   ❌ Авторизация по кукам не подтверждена")
+        # Проверяем, есть ли форма авторизации (значит куки не сработали)
+        if len(driver.find_elements(By.NAME, "email")) > 0:
+            logger.warning("   ⚠️ Страница публикации показывает форму входа")
             return False
+        
+        # Проверяем наличие элемента userMenuOpen или других признаков
+        if len(driver.find_elements(By.CLASS_NAME, "userMenuOpen")) > 0:
+            logger.info("   ✅ Авторизация подтверждена (userMenuOpen)")
+            return True
+        
+        # Если на странице публикации нет формы входа - считаем авторизованными
+        # Куки были установлены, и мы не на странице входа
+        if "login" not in driver.current_url.lower():
+            logger.info("   ✅ Авторизация подтверждена (нет формы входа)")
+            return True
+        
+        return False
             
     except Exception as e:
         logger.error(f"   ❌ Ошибка установки кук: {e}")
-        return False
-
-
-def check_authorization(driver) -> bool:
-    """Проверяет авторизацию по наличию элементов"""
-    try:
-        # Проверяем наличие userMenuOpen или других индикаторов авторизации
-        if len(driver.find_elements(By.CLASS_NAME, "userMenuOpen")) > 0:
-            return True
-        
-        # Проверяем наличие ссылки на профиль
-        if len(driver.find_elements(By.XPATH, "//a[contains(@href, '/profile/')]")) > 0:
-            return True
-        
-        # Проверяем наличие кнопки выхода
-        if len(driver.find_elements(By.XPATH, "//a[contains(text(), 'Выход')]")) > 0:
-            return True
-        
-        return False
-    except:
         return False
 
 
@@ -404,7 +365,7 @@ def upload_image(driver, image_path: Path) -> bool:
 
 
 def publish_post(driver, post_folder: Path, state: dict) -> bool:
-    """Публикует один пост (используя уже установленные куки)"""
+    """Публикует один пост"""
     logger.info(f"\n📂 Пост: {post_folder.name}")
 
     title, post_text, image_path = parse_post_file(post_folder)
@@ -423,23 +384,27 @@ def publish_post(driver, post_folder: Path, state: dict) -> bool:
     logger.info(f"   📝 Публикуем: {title[:50]}...")
 
     try:
-        # Переходим на страницу выбора типа публикации
+        # Переходим на страницу публикации
         driver.get("https://9111.ru/pubs/add/")
         random_sleep(4, 6)
 
-        # Проверяем авторизацию
-        if not check_authorization(driver):
-            logger.error("   ❌ Нет авторизации. Куки недействительны.")
+        # Проверяем, что мы не на странице входа
+        if len(driver.find_elements(By.NAME, "email")) > 0:
+            logger.error("   ❌ Мы на странице входа. Куки недействительны.")
             return False
 
         # Выбираем "Новость, статья"
-        news_link = WebDriverWait(driver, 15).until(
-            EC.element_to_be_clickable((By.XPATH, "//a[contains(text(), 'Новость, статья')]"))
-        )
-        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", news_link)
-        random_sleep(0.5, 1)
-        driver.execute_script("arguments[0].click();", news_link)
-        random_sleep(3, 5)
+        try:
+            news_link = WebDriverWait(driver, 15).until(
+                EC.element_to_be_clickable((By.XPATH, "//a[contains(text(), 'Новость, статья')]"))
+            )
+            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", news_link)
+            random_sleep(0.5, 1)
+            driver.execute_script("arguments[0].click();", news_link)
+            random_sleep(3, 5)
+        except TimeoutException:
+            logger.error("   ❌ Не найдена ссылка 'Новость, статья'")
+            return False
 
         # Заголовок (contenteditable div)
         title_input = WebDriverWait(driver, 20).until(
@@ -581,11 +546,46 @@ def main():
     # Запускаем драйвер с прокси
     driver = setup_driver_with_proxy(current_proxy)
     
-    # Авторизуемся через куки
-    if not login_with_cookies(driver, COOKIES_FILE):
-        logger.error("❌ Не удалось авторизоваться по кукам")
+    # Устанавливаем куки (на странице публикации)
+    cookies = parse_cookies_netscape(COOKIES_FILE)
+    if not cookies:
+        logger.error("❌ Не удалось загрузить куки")
         driver.quit()
         return
+    
+    # Сначала открываем страницу публикации
+    driver.get("https://9111.ru/pubs/add/")
+    random_sleep(2, 3)
+    
+    # Устанавливаем куки
+    for cookie in cookies:
+        try:
+            cookie_dict = {
+                'name': cookie['name'],
+                'value': cookie['value'],
+                'domain': cookie['domain'],
+                'path': cookie['path'],
+                'secure': cookie['secure']
+            }
+            if cookie['expiry'] and cookie['expiry'] > 0:
+                cookie_dict['expiry'] = cookie['expiry']
+            
+            driver.add_cookie(cookie_dict)
+            logger.info(f"      ✅ Кука: {cookie['name']}")
+        except Exception as e:
+            logger.debug(f"      ⚠️ {cookie['name']}: {e}")
+    
+    # Обновляем страницу
+    driver.refresh()
+    random_sleep(3, 5)
+    
+    # Проверяем авторизацию
+    if len(driver.find_elements(By.NAME, "email")) > 0:
+        logger.error("❌ Авторизация не удалась - форма входа видна")
+        driver.quit()
+        return
+    
+    logger.info("✅ Авторизация по кукам успешна!")
     
     published_count = 0
     proxy_fail_count = 0
@@ -622,9 +622,27 @@ def main():
                     
                     if current_proxy:
                         driver = setup_driver_with_proxy(current_proxy)
-                        if not login_with_cookies(driver, COOKIES_FILE):
-                            logger.error("   ❌ Не удалось авторизоваться после смены прокси")
-                            break
+                        
+                        # Повторно устанавливаем куки
+                        driver.get("https://9111.ru/pubs/add/")
+                        random_sleep(2, 3)
+                        for cookie in cookies:
+                            try:
+                                cookie_dict = {
+                                    'name': cookie['name'],
+                                    'value': cookie['value'],
+                                    'domain': cookie['domain'],
+                                    'path': cookie['path'],
+                                    'secure': cookie['secure']
+                                }
+                                if cookie['expiry'] and cookie['expiry'] > 0:
+                                    cookie_dict['expiry'] = cookie['expiry']
+                                driver.add_cookie(cookie_dict)
+                            except:
+                                pass
+                        driver.refresh()
+                        random_sleep(3, 5)
+                        
                         proxy_fail_count = 0
                         logger.info("   ✅ Прокси сменен, продолжаем...")
                     else:
