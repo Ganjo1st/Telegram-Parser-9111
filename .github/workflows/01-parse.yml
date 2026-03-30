@@ -1,0 +1,45 @@
+name: 01 - Parse Telegram
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'  # Каждые 30 минут
+  workflow_dispatch:        # Ручной запуск
+
+jobs:
+  parse:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Telegram Parser
+        env:
+          API_ID: ${{ secrets.API_ID }}
+          API_HASH: ${{ secrets.API_HASH }}
+          PHONE_NUMBER: ${{ secrets.PHONE_NUMBER }}
+          CHANNEL_ID: ${{ secrets.CHANNEL_ID }}
+          PASSWORD: ${{ secrets.PASSWORD }}
+          # Отключаем публикацию в парсере
+          DISABLE_PUBLISHING: "true"
+        run: python parser.py
+
+      - name: Commit and push changes
+        run: |
+          git config --local user.name "github-actions[bot]"
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/posts/ data/last_id.txt
+          git diff --quiet && git diff --staged --quiet || git commit -m "Update posts from Telegram" || true
+          git push
