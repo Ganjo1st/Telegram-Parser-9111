@@ -10,9 +10,11 @@ venv/
 env/
 ENV/
 
-# Session files
-# Data files
-!data/.gitkeep
+# Session files - НЕ ИГНОРИРУЕМ!
+# sessions/ - теперь коммитим
+
+# Data files - коммитим папки с постами, но не их содержимое?
+# На самом деле нам нужно коммитить папки, чтобы публикатор их видел
 
 # Environment variables
 .env

@@ -2,28 +2,23 @@
 # -*- coding: utf-8 -*-
 """
 Telegram Parser for 9111.ru
-Парсинг Telegram каналов и публикация на 9111.ru с обходом защиты
+Парсинг Telegram каналов и сохранение постов (без автоматической публикации)
 """
 
 import os
 import sys
 import json
-import time
-import random
 import asyncio
 import logging
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Dict, List, Tuple
+from typing import Optional, List
 
 from telethon import TelegramClient
 from telethon.tl.types import Message
-from telethon.errors import SessionPasswordNeededError, FloodWaitError, PhoneCodeInvalidError
+from telethon.errors import SessionPasswordNeededError, FloodWaitError
 from dotenv import load_dotenv
-
-# Импорт модуля для работы с сайтом
-from website_poster import WebsitePoster
 
 # Загрузка переменных окружения
 load_dotenv()
@@ -68,26 +63,13 @@ class TelegramParser:
         # Путь к файлу сессии
         self.session_file = self.session_dir / 'telegram_session'
         
-        # Инициализация клиента Telegram с сохранением сессии
+        # Инициализация клиента Telegram
         self.client = TelegramClient(str(self.session_file), self.api_id, self.api_hash)
         
-        # Инициализация модуля для публикации на сайте (опционально)
-        self.website_poster = None
-        try:
-            # Проверяем наличие секретов для сайта
-            site_url = os.getenv('SITE_URL', '')
-            site_login = os.getenv('SITE_LOGIN', '')
-            site_password = os.getenv('SITE_PASSWORD', '')
-            
-            if all([site_url, site_login, site_password]):
-                self.website_poster = WebsitePoster()
-                logger.info("✅ Модуль публикации на сайте инициализирован")
-            else:
-                logger.info("ℹ️ Секреты для сайта не добавлены, публикация будет пропущена")
-                logger.info("   Для включения публикации добавьте: SITE_URL, SITE_LOGIN, SITE_PASSWORD")
-        except Exception as e:
-            logger.warning(f"⚠️ Модуль публикации не инициализирован: {e}")
-            self.website_poster = None
+        # Флаг отключения публикации (для разделения workflow)
+        self.disable_publishing = os.getenv('DISABLE_PUBLISHING', 'false').lower() == 'true'
+        if self.disable_publishing:
+            logger.info("ℹ️ Режим 'только сохранение': публикация на сайте отключена")
     
     def _sanitize_filename(self, text: str, max_length: int = 200) -> str:
         """Очистка имени файла от недопустимых символов"""
@@ -125,11 +107,9 @@ class TelegramParser:
         """Скачивание медиафайла из сообщения"""
         try:
             if message.media:
-                # Определяем тип медиа
                 media_type = str(type(message.media))
                 
                 if 'Photo' in media_type:
-                    # Скачиваем фото
                     file_path = await self.client.download_media(
                         message.media,
                         file=str(folder_path / 'image.jpg')
@@ -139,7 +119,6 @@ class TelegramParser:
                         return str(file_path)
                         
                 elif 'Document' in media_type:
-                    # Скачиваем документ
                     ext = 'file'
                     if hasattr(message.media.document, 'mime_type'):
                         mime = message.media.document.mime_type
@@ -159,7 +138,6 @@ class TelegramParser:
                         return str(file_path)
                         
                 elif 'Video' in media_type:
-                    # Скачиваем видео
                     file_path = await self.client.download_media(
                         message.media,
                         file=str(folder_path / 'video.mp4')
@@ -205,33 +183,17 @@ class TelegramParser:
             with open(meta_file, 'w', encoding='utf-8') as f:
                 json.dump(metadata, f, ensure_ascii=False, indent=2)
         
-        # Публикация на сайте (если модуль инициализирован и есть текст)
-        if self.website_poster and text.strip():
-            try:
-                # Проверяем доступность сайта
-                if await self.website_poster.check_site_availability():
-                    post_url = await self.website_poster.publish_post(
-                        title=f"Пост от {message.date.strftime('%Y-%m-%d %H:%M')}",
-                        content=text,
-                        media_path=media_path if media_path else None,
-                        source_id=message.id
-                    )
-                    if post_url:
-                        metadata['published_url'] = post_url
-                        with open(meta_file, 'w', encoding='utf-8') as f:
-                            json.dump(metadata, f, ensure_ascii=False, indent=2)
-                        logger.info(f"   🌐 Опубликовано на сайте: {post_url}")
-                else:
-                    logger.warning("   ⚠️ Сайт недоступен, публикация отложена")
-            except Exception as e:
-                logger.error(f"   ❌ Ошибка публикации на сайте: {e}")
+        # Публикация на сайте ОТКЛЮЧЕНА (будет выполняться отдельным workflow)
+        # Посты сохраняются в data/posts/ для последующей публикации
     
     async def get_last_processed_id(self) -> int:
         """Получение последнего обработанного ID сообщения"""
         if self.state_file.exists():
             try:
                 with open(self.state_file, 'r') as f:
-                    return int(f.read().strip())
+                    content = f.read().strip()
+                    if content:
+                        return int(content)
             except (ValueError, IOError):
                 return 0
         return 0
@@ -242,24 +204,37 @@ class TelegramParser:
             f.write(str(message_id))
         logger.info(f"✅ Состояние сохранено: ID {message_id}")
     
-    async def connect_to_telegram(self):
-        """Подключение к Telegram с обработкой кода подтверждения"""
+    async def get_new_messages(self, channel, last_id: int, limit: int = 100) -> List[Message]:
+        """
+        Получение новых сообщений (с ID больше last_id)
+        Используем min_id для получения сообщений после last_id
+        """
+        new_messages = []
         try:
-            # Пытаемся подключиться с существующей сессией
+            # iter_messages с min_id получает сообщения с ID > min_id
+            async for message in self.client.iter_messages(
+                channel, 
+                limit=limit, 
+                min_id=last_id,
+                reverse=True  # от старых к новым
+            ):
+                if message.id > last_id:
+                    new_messages.append(message)
+        except Exception as e:
+            logger.error(f"❌ Ошибка получения сообщений: {e}")
+        
+        return new_messages
+    
+    async def connect_to_telegram(self) -> bool:
+        """Подключение к Telegram"""
+        try:
             await self.client.connect()
             
             if not await self.client.is_user_authorized():
                 logger.info("🔐 Требуется авторизация. Отправка кода подтверждения...")
-                
-                # Отправляем запрос на код
                 await self.client.send_code_request(self.phone)
                 logger.info("📱 Код подтверждения отправлен в Telegram")
-                logger.info("⚠️ ВНИМАНИЕ: Код нужно ввести вручную при первом запуске!")
-                logger.info("   Для этого запустите скрипт локально или используйте тестовый режим")
-                
-                # В GitHub Actions нет интерактивного ввода
-                # Поэтому при первом запуске нужно использовать уже существующую сессию
-                raise Exception("Требуется ручной ввод кода подтверждения. Пожалуйста, запустите парсер локально для первой авторизации.")
+                raise Exception("Требуется ручной ввод кода подтверждения")
             
             logger.info("✅ Успешное подключение к Telegram")
             return True
@@ -277,10 +252,9 @@ class TelegramParser:
             
             # Подключаемся к Telegram
             if not await self.connect_to_telegram():
-                logger.error("❌ Не удалось подключиться к Telegram")
                 return
             
-            # Получаем информацию о текущем пользователе
+            # Получаем информацию о пользователе
             try:
                 me = await self.client.get_me()
                 logger.info(f"✅ Подключены как: {me.first_name} {me.last_name or ''}")
@@ -301,22 +275,17 @@ class TelegramParser:
             last_id = await self.get_last_processed_id()
             logger.info(f"📄 Последний обработанный ID: {last_id}")
             
-            # Получаем новые сообщения (не более 50 за раз)
-            new_messages = []
-            async for message in self.client.iter_messages(channel, limit=50, offset_id=last_id):
-                if message.id > last_id:
-                    new_messages.append(message)
-            
-            # Сортируем по возрастанию ID (от старых к новым)
-            new_messages.sort(key=lambda x: x.id)
+            # Получаем новые сообщения
+            new_messages = await self.get_new_messages(channel, last_id, limit=100)
             
             if not new_messages:
                 logger.info("📭 Новых сообщений нет")
+                await self.client.disconnect()
                 return
             
             logger.info(f"📄 Получено новых сообщений: {len(new_messages)}")
             
-            # Обрабатываем каждое сообщение
+            # Обрабатываем сообщения
             for idx, message in enumerate(new_messages, 1):
                 logger.info(f"\n{'─' * 40}")
                 logger.info(f"📄 [{idx}/{len(new_messages)}] ID {message.id} от {message.date.strftime('%Y-%m-%d %H:%M:%S')}")
@@ -332,7 +301,7 @@ class TelegramParser:
                 await self.save_last_processed_id(message.id)
                 
                 # Небольшая задержка между обработкой сообщений
-                await asyncio.sleep(random.uniform(0.5, 1.5))
+                await asyncio.sleep(0.5)
             
             logger.info(f"\n{'=' * 50}")
             logger.info(f"🎉 Обработано: {len(new_messages)} новых постов")

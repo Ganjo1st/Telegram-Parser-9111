@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 Модуль для публикации на сайте 9111.ru с обходом защиты.
-Использует прямое соединение (без прокси).
+Прокси автоматически загружаются из репозитория Proctor.
 """
 
 import os
@@ -12,7 +12,7 @@ import random
 import asyncio
 import logging
 from typing import Optional, Dict, List
-from datetime import datetime
+from datetime import datetime, timedelta
 from urllib.parse import urljoin
 
 import requests
@@ -25,19 +25,26 @@ logger = logging.getLogger(__name__)
 class WebsitePoster:
     """Класс для публикации на сайте с обходом блокировок"""
     
+    # URL-адреса файлов с прокси в репозитории Proctor
+    PROXY_SOURCES = {
+        'russia': 'https://raw.githubusercontent.com/Ganjo1st/Proctor/main/data/proxies_russia.txt',
+        'global': 'https://raw.githubusercontent.com/Ganjo1st/Proctor/main/data/proxies_global.txt'
+    }
+    
     def __init__(self):
         """Инициализация"""
         self.ua = UserAgent()
+        self.proxies = []
+        self.proxy_last_updated = None
+        self.proxy_cache_duration = timedelta(minutes=30)
         
-        # URL и учетные данные сайта (из GitHub Secrets)
+        # URL и учетные данные сайта
         self.site_url = os.getenv('SITE_URL', 'https://9111.ru').rstrip('/')
         self.site_login = os.getenv('SITE_LOGIN', '')
         self.site_password = os.getenv('SITE_PASSWORD', '')
         
-        # Проверяем наличие секретов для сайта
         if not all([self.site_login, self.site_password]):
-            logger.warning("⚠️ Отсутствуют SITE_LOGIN или SITE_PASSWORD в секретах GitHub")
-            logger.info("📝 Публикация на сайте будет пропущена. Посты будут только сохранены локально.")
+            logger.warning("⚠️ Отсутствуют SITE_LOGIN или SITE_PASSWORD")
             raise Exception("Website credentials not configured")
         
         self.cookies = {}
@@ -58,29 +65,80 @@ class WebsitePoster:
             'Referer': self.site_url,
         }
         
-        # Случайные задержки для имитации человека
         self.min_delay = 2
         self.max_delay = 5
         
         logger.info(f"🌐 Инициализирован модуль публикации для сайта: {self.site_url}")
-        logger.info(f"📧 Email для входа: {self.site_login[:3]}...{self.site_login[-3:] if len(self.site_login) > 6 else ''}")
+    
+    def _download_proxies_from_github(self) -> List[str]:
+        """Загрузка списка прокси из репозитория Proctor"""
+        all_proxies = []
+        
+        for proxy_type, url in self.PROXY_SOURCES.items():
+            try:
+                logger.info(f"📡 Загрузка {proxy_type} прокси...")
+                response = requests.get(url, timeout=10)
+                if response.status_code == 200:
+                    proxies = [p.strip() for p in response.text.splitlines() if p.strip()]
+                    all_proxies.extend(proxies)
+                    logger.info(f"   ✅ Загружено {len(proxies)} прокси")
+                else:
+                    logger.warning(f"   ⚠️ Ошибка {response.status_code}")
+            except Exception as e:
+                logger.warning(f"   ⚠️ Ошибка: {e}")
+        
+        unique_proxies = list(dict.fromkeys(all_proxies))
+        logger.info(f"📊 Всего уникальных прокси: {len(unique_proxies)}")
+        
+        if not unique_proxies:
+            logger.warning("⚠️ Не загружено ни одного прокси!")
+            return []
+        
+        return unique_proxies
+    
+    def _get_proxies(self) -> List[str]:
+        """Получение актуального списка прокси"""
+        now = datetime.now()
+        
+        if (not self.proxies or 
+            self.proxy_last_updated is None or 
+            now - self.proxy_last_updated > self.proxy_cache_duration):
+            
+            logger.info("🔄 Обновление списка прокси...")
+            self.proxies = self._download_proxies_from_github()
+            self.proxy_last_updated = now
+        
+        return self.proxies
+    
+    def _get_random_proxy(self) -> Optional[Dict[str, str]]:
+        """Получение случайного прокси"""
+        proxies_list = self._get_proxies()
+        if not proxies_list:
+            return None
+        
+        proxy = random.choice(proxies_list)
+        
+        if proxy.startswith('socks5://'):
+            return {'http': proxy, 'https': proxy}
+        elif '://' in proxy:
+            return {'http': proxy, 'https': proxy}
+        else:
+            return {'http': f'http://{proxy}', 'https': f'http://{proxy}'}
     
     def _create_session(self) -> requests.Session:
         """Создание сессии"""
-        session = requests.Session()
-        return session
+        return requests.Session()
     
     async def _human_delay(self):
-        """Случайная задержка для имитации человека"""
+        """Случайная задержка"""
         delay = random.uniform(self.min_delay, self.max_delay)
         await asyncio.sleep(delay)
     
     def _get_headers(self) -> Dict[str, str]:
-        """Генерация заголовков для запроса"""
+        """Генерация заголовков"""
         headers = self.base_headers.copy()
         headers['User-Agent'] = self.ua.random
         
-        # Добавляем случайные параметры
         if random.random() > 0.7:
             headers['DNT'] = '1'
         if random.random() > 0.8:
@@ -90,20 +148,36 @@ class WebsitePoster:
     
     async def _make_request(self, url: str, method: str = 'GET', 
                            max_retries: int = 3, **kwargs) -> Optional[requests.Response]:
-        """
-        Выполнение запроса с повторными попытками
-        """
-        for retry in range(max_retries):
+        """Выполнение запроса с прокси"""
+        proxies_list = self._get_proxies()
+        shuffled = proxies_list.copy() if proxies_list else []
+        random.shuffle(shuffled)
+        
+        if not shuffled:
+            shuffled = [None]
+        
+        for retry, proxy_str in enumerate(shuffled[:max_retries]):
+            proxy_dict = None
+            if proxy_str:
+                if proxy_str.startswith('socks5://'):
+                    proxy_dict = {'http': proxy_str, 'https': proxy_str}
+                elif '://' in proxy_str:
+                    proxy_dict = {'http': proxy_str, 'https': proxy_str}
+                else:
+                    proxy_dict = {'http': f'http://{proxy_str}', 'https': f'http://{proxy_str}'}
+            
             headers = self._get_headers()
             
             try:
-                logger.debug(f"Попытка {retry+1}/{max_retries}: {url}")
+                proxy_display = proxy_str if proxy_str else "прямое соединение"
+                logger.debug(f"Попытка {retry+1}/{max_retries} через {proxy_display}")
                 
                 response = self.session.request(
                     method=method,
                     url=url,
                     headers=headers,
-                    timeout=30,
+                    proxies=proxy_dict,
+                    timeout=25,
                     allow_redirects=True,
                     **kwargs
                 )
@@ -112,24 +186,24 @@ class WebsitePoster:
                     logger.debug(f"✅ Успех! Статус: {response.status_code}")
                     return response
                 elif response.status_code == 403:
-                    logger.warning(f"⚠️ Блокировка 403, попытка {retry+1}")
-                    await asyncio.sleep(random.uniform(5, 10))
+                    logger.warning(f"⚠️ Блокировка 403 на {proxy_display}")
                     continue
                 elif response.status_code == 429:
-                    logger.warning(f"⚠️ Слишком много запросов, ждем...")
+                    logger.warning(f"⚠️ Слишком много запросов на {proxy_display}")
                     await asyncio.sleep(random.uniform(10, 20))
                     continue
                 else:
-                    logger.warning(f"⚠️ Статус {response.status_code}, попытка {retry+1}")
+                    logger.warning(f"⚠️ Статус {response.status_code} на {proxy_display}")
                     continue
                     
             except requests.exceptions.Timeout:
-                logger.warning(f"⏱️ Таймаут, попытка {retry+1}")
-                await asyncio.sleep(random.uniform(3, 7))
+                logger.warning(f"⏱️ Таймаут на {proxy_display}")
+                continue
+            except requests.exceptions.ProxyError as e:
+                logger.warning(f"🚫 Ошибка прокси {proxy_display}: {e}")
                 continue
             except Exception as e:
-                logger.warning(f"❌ Ошибка: {e}, попытка {retry+1}")
-                await asyncio.sleep(random.uniform(3, 7))
+                logger.warning(f"❌ Ошибка: {e}")
                 continue
         
         logger.error(f"❌ Все {max_retries} попыток не удались")
@@ -149,19 +223,16 @@ class WebsitePoster:
             return False
     
     async def login(self) -> bool:
-        """Авторизация на сайте с использованием email"""
-        logger.info(f"🔐 Попытка входа на сайт...")
+        """Авторизация на сайте"""
+        logger.info("🔐 Попытка входа на сайт...")
         
-        # Получаем главную страницу
         response = await self._make_request(self.site_url)
         if not response:
             logger.error("❌ Не удалось получить главную страницу")
             return False
         
-        # Ищем форму входа и CSRF токен
         soup = BeautifulSoup(response.text, 'html.parser')
         
-        # Пытаемся найти CSRF токен
         csrf_token = None
         for input_tag in soup.find_all('input'):
             name = input_tag.get('name', '').lower()
@@ -169,10 +240,8 @@ class WebsitePoster:
                 csrf_token = input_tag.get('value')
                 break
         
-        # URL для входа
         login_url = urljoin(self.site_url, '/login')
         
-        # Данные для входа
         login_data = {
             'email': self.site_login,
             'login': self.site_login,
@@ -184,13 +253,11 @@ class WebsitePoster:
             login_data['csrf_token'] = csrf_token
             login_data['_token'] = csrf_token
         
-        # Добавляем случайные поля
         if random.random() > 0.5:
             login_data['remember'] = 'on'
         
         await self._human_delay()
         
-        # Выполняем вход
         response = await self._make_request(
             login_url,
             method='POST',
@@ -212,15 +279,12 @@ class WebsitePoster:
         """Публикация поста на сайте"""
         logger.info(f"📝 Публикация поста: {title[:50]}...")
         
-        # Проверяем авторизацию
         if not self.cookies:
             if not await self.login():
                 return None
         
-        # URL для создания публикации
         publish_url = urljoin(self.site_url, '/blog/add/')
         
-        # Подготавливаем данные
         data = {
             'title': title,
             'content': content,
@@ -228,11 +292,9 @@ class WebsitePoster:
             'published_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         }
         
-        # Добавляем случайные поля
         if random.random() > 0.6:
             data['tags'] = random.choice(['новости', 'аналитика', 'обзор', 'события'])
         
-        # Подготавливаем файл
         files = None
         if media_path and os.path.exists(media_path):
             with open(media_path, 'rb') as f:
@@ -242,7 +304,6 @@ class WebsitePoster:
         
         await self._human_delay()
         
-        # Выполняем публикацию
         response = await self._make_request(
             publish_url,
             method='POST',
@@ -254,7 +315,6 @@ class WebsitePoster:
         if not response:
             return None
         
-        # Извлекаем URL поста
         if response.status_code in [200, 201]:
             soup = BeautifulSoup(response.text, 'html.parser')
             for link in soup.find_all('a'):
