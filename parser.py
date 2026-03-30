@@ -15,7 +15,7 @@ import logging
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Dict, List, Tuple
+from typing import Optional, List
 
 from telethon import TelegramClient
 from telethon.tl.types import Message
@@ -41,37 +41,27 @@ class TelegramParser:
     
     def __init__(self):
         """Инициализация парсера"""
-        # Получаем данные из секретов GitHub
         self.api_id = int(os.getenv('API_ID', 0))
         self.api_hash = os.getenv('API_HASH', '')
         self.phone = os.getenv('PHONE_NUMBER', '')
         self.password = os.getenv('PASSWORD', '')
         self.channel_id = os.getenv('CHANNEL_ID', '')
         
-        # Проверка обязательных параметров
         if not all([self.api_id, self.api_hash, self.phone, self.channel_id]):
             logger.error("❌ Отсутствуют необходимые переменные окружения")
-            logger.info("Пожалуйста, добавьте секреты: API_ID, API_HASH, PHONE_NUMBER, CHANNEL_ID")
             sys.exit(1)
         
-        # Создаем директорию для данных
         self.data_dir = Path('data/posts')
         self.data_dir.mkdir(parents=True, exist_ok=True)
         
-        # Файл для хранения последнего обработанного ID
         self.state_file = Path('data/last_id.txt')
         
-        # Директория для сессионных файлов
         self.session_dir = Path('sessions')
         self.session_dir.mkdir(parents=True, exist_ok=True)
         
-        # Путь к файлу сессии
         self.session_file = self.session_dir / 'telegram_session'
-        
-        # Инициализация клиента Telegram с сохранением сессии
         self.client = TelegramClient(str(self.session_file), self.api_id, self.api_hash)
         
-        # Инициализация модуля для публикации на сайте
         self.website_poster = None
         try:
             site_url = os.getenv('SITE_URL', '')
@@ -81,14 +71,12 @@ class TelegramParser:
             if all([site_url, site_login, site_password]):
                 self.website_poster = WebsitePoster()
                 logger.info("✅ Модуль публикации на сайте инициализирован")
-            else:
-                logger.info("ℹ️ Секреты для сайта не добавлены, публикация будет пропущена")
         except Exception as e:
             logger.warning(f"⚠️ Модуль публикации не инициализирован: {e}")
             self.website_poster = None
     
     def _sanitize_filename(self, text: str, max_length: int = 200) -> str:
-        """Очистка имени файла от недопустимых символов"""
+        """Очистка имени файла"""
         text = re.sub(r'[<>:"/\\|?*]', '', text)
         text = re.sub(r'[\s\x00-\x1f\x7f-\x9f]+', '_', text)
         text = re.sub(r'[\x00-\x1f\x7f-\x9f]', '', text)
@@ -100,7 +88,7 @@ class TelegramParser:
         return text
     
     def _create_post_folder(self, message: Message) -> Path:
-        """Создание папки для поста с человеко-читаемым именем"""
+        """Создание папки для поста"""
         date = message.date.strftime('%Y%m%d_%H%M%S')
         text = message.text or message.raw_text or ""
         text = text.strip().replace('\n', ' ')[:100]
@@ -113,7 +101,7 @@ class TelegramParser:
         return folder_path
     
     async def _download_media(self, message: Message, folder_path: Path) -> Optional[str]:
-        """Скачивание медиафайла из сообщения"""
+        """Скачивание медиафайла"""
         try:
             if message.media:
                 media_type = str(type(message.media))
@@ -161,16 +149,14 @@ class TelegramParser:
         return None
     
     async def _save_post_data(self, message: Message, folder_path: Path):
-        """Сохранение данных поста (текст, метаданные, медиа)"""
+        """Сохранение данных поста"""
         text = message.text or message.raw_text or ""
         
-        # Сохраняем текст
         text_file = folder_path / 'text.txt'
         with open(text_file, 'w', encoding='utf-8') as f:
             f.write(text)
         logger.info(f"   ✅ Текст сохранен ({len(text)} символов)")
         
-        # Сохраняем метаданные
         meta_file = folder_path / 'meta.json'
         metadata = {
             'id': message.id,
@@ -183,14 +169,12 @@ class TelegramParser:
         with open(meta_file, 'w', encoding='utf-8') as f:
             json.dump(metadata, f, ensure_ascii=False, indent=2)
         
-        # Скачиваем медиа
         media_path = await self._download_media(message, folder_path)
         if media_path:
             metadata['media_path'] = str(Path(media_path).name)
             with open(meta_file, 'w', encoding='utf-8') as f:
                 json.dump(metadata, f, ensure_ascii=False, indent=2)
         
-        # Публикация на сайте
         if self.website_poster and text.strip():
             try:
                 if await self.website_poster.check_site_availability():
@@ -211,7 +195,7 @@ class TelegramParser:
                 logger.error(f"   ❌ Ошибка публикации на сайте: {e}")
     
     async def get_last_processed_id(self) -> int:
-        """Получение последнего обработанного ID сообщения"""
+        """Получение последнего обработанного ID"""
         if self.state_file.exists():
             try:
                 with open(self.state_file, 'r') as f:
@@ -223,20 +207,31 @@ class TelegramParser:
         return 0
     
     async def save_last_processed_id(self, message_id: int):
-        """Сохранение последнего обработанного ID сообщения"""
+        """Сохранение последнего обработанного ID"""
         with open(self.state_file, 'w') as f:
             f.write(str(message_id))
         logger.info(f"✅ Состояние сохранено: ID {message_id}")
     
-    async def get_highest_message_id(self, channel, limit: int = 100) -> int:
-        """Получение самого высокого ID сообщения в канале"""
+    async def get_new_messages(self, channel, last_id: int, limit: int = 100) -> List[Message]:
+        """
+        Получение новых сообщений (с ID больше last_id)
+        Используем min_id для получения сообщений после last_id
+        """
+        new_messages = []
         try:
-            async for message in self.client.iter_messages(channel, limit=1):
-                if message:
-                    return message.id
+            # iter_messages с min_id получает сообщения с ID > min_id
+            async for message in self.client.iter_messages(
+                channel, 
+                limit=limit, 
+                min_id=last_id,
+                reverse=True  # от старых к новым
+            ):
+                if message.id > last_id:
+                    new_messages.append(message)
         except Exception as e:
-            logger.error(f"❌ Ошибка получения последнего ID: {e}")
-        return 0
+            logger.error(f"❌ Ошибка получения сообщений: {e}")
+        
+        return new_messages
     
     async def connect_to_telegram(self) -> bool:
         """Подключение к Telegram"""
@@ -263,11 +258,9 @@ class TelegramParser:
             logger.info("🚀 Запуск парсера Telegram")
             logger.info("=" * 50)
             
-            # Подключаемся к Telegram
             if not await self.connect_to_telegram():
                 return
             
-            # Получаем информацию о пользователе
             try:
                 me = await self.client.get_me()
                 logger.info(f"✅ Подключены как: {me.first_name} {me.last_name or ''}")
@@ -275,7 +268,6 @@ class TelegramParser:
                 logger.error(f"❌ Не удалось получить информацию о пользователе: {e}")
                 return
             
-            # Получаем канал
             try:
                 channel = await self.client.get_entity(self.channel_id)
                 channel_title = getattr(channel, 'title', str(self.channel_id))
@@ -284,57 +276,41 @@ class TelegramParser:
                 logger.error(f"❌ Не удалось получить канал: {e}")
                 return
             
-            # Получаем последний ID в канале
-            highest_id = await self.get_highest_message_id(channel)
-            logger.info(f"📊 Последний ID в канале: {highest_id}")
-            
-            # Получаем последний обработанный ID
             last_id = await self.get_last_processed_id()
             logger.info(f"📄 Последний обработанный ID: {last_id}")
             
-            # Определяем диапазон для парсинга
-            if highest_id > last_id:
-                logger.info(f"📊 Найдено новых сообщений: {highest_id - last_id}")
-                
-                # Получаем сообщения от last_id до highest_id
-                new_messages = []
-                async for message in self.client.iter_messages(channel, limit=100, offset_id=last_id):
-                    if message.id > last_id:
-                        new_messages.append(message)
-                    if message.id >= highest_id:
-                        break
-                
-                # Сортируем по возрастанию ID
-                new_messages.sort(key=lambda x: x.id)
-                
-                logger.info(f"📄 Получено сообщений для обработки: {len(new_messages)}")
-                
-                # Обрабатываем сообщения
-                for idx, message in enumerate(new_messages, 1):
-                    logger.info(f"\n{'─' * 40}")
-                    logger.info(f"📄 [{idx}/{len(new_messages)}] ID {message.id} от {message.date.strftime('%Y-%m-%d %H:%M:%S')}")
-                    
-                    folder_path = self._create_post_folder(message)
-                    logger.info(f"   📁 Папка: {folder_path.name}")
-                    
-                    await self._save_post_data(message, folder_path)
-                    await self.save_last_processed_id(message.id)
-                    
-                    await asyncio.sleep(random.uniform(0.5, 1.5))
-                
-                logger.info(f"\n{'=' * 50}")
-                logger.info(f"🎉 Обработано: {len(new_messages)} новых постов")
-                logger.info(f"📁 Посты сохранены в: {self.data_dir}")
-                logger.info(f"{'=' * 50}")
-            else:
+            # Получаем новые сообщения
+            new_messages = await self.get_new_messages(channel, last_id, limit=100)
+            
+            if not new_messages:
                 logger.info("📭 Новых сообщений нет")
+                await self.client.disconnect()
+                return
+            
+            logger.info(f"📄 Получено новых сообщений: {len(new_messages)}")
+            
+            for idx, message in enumerate(new_messages, 1):
+                logger.info(f"\n{'─' * 40}")
+                logger.info(f"📄 [{idx}/{len(new_messages)}] ID {message.id} от {message.date.strftime('%Y-%m-%d %H:%M:%S')}")
+                
+                folder_path = self._create_post_folder(message)
+                logger.info(f"   📁 Папка: {folder_path.name}")
+                
+                await self._save_post_data(message, folder_path)
+                await self.save_last_processed_id(message.id)
+                
+                await asyncio.sleep(random.uniform(0.5, 1.5))
+            
+            logger.info(f"\n{'=' * 50}")
+            logger.info(f"🎉 Обработано: {len(new_messages)} новых постов")
+            logger.info(f"📁 Посты сохранены в: {self.data_dir}")
+            logger.info(f"{'=' * 50}")
             
         except FloodWaitError as e:
             logger.warning(f"⚠️ Flood wait: нужно подождать {e.seconds} секунд")
             await asyncio.sleep(e.seconds)
         except SessionPasswordNeededError:
             logger.error("❌ Требуется пароль двухфакторной аутентификации")
-            logger.info("Добавьте PASSWORD в секреты GitHub")
         except Exception as e:
             logger.error(f"❌ Неожиданная ошибка: {e}")
             raise
@@ -344,7 +320,6 @@ class TelegramParser:
 
 
 async def main():
-    """Главная функция"""
     parser = TelegramParser()
     await parser.parse_channel()
 
