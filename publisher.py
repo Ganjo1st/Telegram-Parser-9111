@@ -341,6 +341,7 @@ def parse_post_file(post_folder: Path) -> Tuple[Optional[str], Optional[str], Op
 def upload_image(driver, image_path: Path) -> bool:
     """Загружает изображение через кнопку '+ Фото'"""
     try:
+        # Ищем кнопку "+ Фото"
         photo_label = WebDriverWait(driver, 15).until(
             EC.element_to_be_clickable((By.XPATH, "//label[contains(@class, 'lite_editor_tools_btn') and contains(text(), '+ Фото')]"))
         )
@@ -348,11 +349,28 @@ def upload_image(driver, image_path: Path) -> bool:
         photo_label.click()
         random_sleep(1, 2)
 
-        file_input = driver.find_element(By.CSS_SELECTOR, "input[type='file']")
+        # Ищем input для загрузки файла по ID (правильный способ)
+        file_input = WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.ID, "editor_file_upload"))
+        )
+        
+        # Отправляем путь к файлу
         file_input.send_keys(str(image_path.absolute()))
-        logger.info(f"   ✅ Изображение загружено")
+        logger.info(f"   ✅ Изображение загружено: {image_path.name}")
         random_sleep(2, 4)
         return True
+        
+    except TimeoutException:
+        # Пробуем найти input другим способом
+        try:
+            file_input = driver.find_element(By.CSS_SELECTOR, "input[type='file']")
+            file_input.send_keys(str(image_path.absolute()))
+            logger.info(f"   ✅ Изображение загружено (альтернативный способ): {image_path.name}")
+            random_sleep(2, 4)
+            return True
+        except Exception as e2:
+            logger.warning(f"   ⚠️ Альтернативный способ тоже не сработал: {e2}")
+            return False
     except Exception as e:
         logger.warning(f"   ⚠️ Ошибка загрузки фото: {e}")
         return False
