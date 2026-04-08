@@ -15,8 +15,8 @@ cookies_9111.ru.txt
 
 # Sessions (важно!)
 # sessions/
-*.session
-*.session-journal
+# *.session
+# *.session-journal
 
 # Data (кроме .gitkeep)
 data/posts/
