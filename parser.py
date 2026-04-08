@@ -3,6 +3,7 @@
 """
 Telegram Parser for 9111.ru
 Парсинг Telegram каналов и сохранение постов (без автоматической публикации)
+Версия для теста: скачивает только ПРЕДПОСЛЕДНИЙ пост.
 """
 
 import os
@@ -53,7 +54,7 @@ class TelegramParser:
         self.data_dir = Path('data/posts')
         self.data_dir.mkdir(parents=True, exist_ok=True)
         
-        # Файл для хранения последнего обработанного ID
+        # Файл для хранения последнего обработанного ID (не используется в тестовом режиме)
         self.state_file = Path('data/last_id.txt')
         
         # Директория для сессионных файлов
@@ -204,26 +205,40 @@ class TelegramParser:
             f.write(str(message_id))
         logger.info(f"✅ Состояние сохранено: ID {message_id}")
     
-    async def get_new_messages(self, channel, last_id: int, limit: int = 100) -> List[Message]:
+    # ========== ИЗМЕНЕННЫЙ МЕТОД ДЛЯ ТЕСТА ==========
+    async def get_test_messages(self, channel, limit: int = 2) -> List[Message]:
         """
-        Получение новых сообщений (с ID больше last_id)
-        Используем min_id для получения сообщений после last_id
+        ТЕСТОВЫЙ метод: получает последние N сообщений и возвращает ПРЕДПОСЛЕДНЕЕ.
+        Для первого запуска: последнее сообщение пропускается, берется то, что перед ним.
         """
-        new_messages = []
+        logger.info(f"🧪 ТЕСТОВЫЙ РЕЖИМ: Будет скачан только ПРЕДПОСЛЕДНИЙ пост (из последних {limit})")
+        all_messages = []
         try:
-            # iter_messages с min_id получает сообщения с ID > min_id
-            async for message in self.client.iter_messages(
-                channel, 
-                limit=limit, 
-                min_id=last_id,
-                reverse=True  # от старых к новым
-            ):
-                if message.id > last_id:
-                    new_messages.append(message)
+            # Получаем последние `limit` сообщений (без фильтрации по ID)
+            async for message in self.client.iter_messages(channel, limit=limit):
+                all_messages.append(message)
+            
+            if not all_messages:
+                logger.warning("❌ В канале нет сообщений")
+                return []
+            
+            # Сортируем по возрастанию ID (от старых к новым), чтобы правильно определить предпоследний
+            all_messages.sort(key=lambda m: m.id)
+            
+            # Если сообщение всего одно, вернуть его не можем, т.к. нет "предпоследнего"
+            if len(all_messages) < 2:
+                logger.warning(f"⚠️ В канале только {len(all_messages)} пост(а). Недостаточно для теста (нужно минимум 2).")
+                return []
+            
+            # Возвращаем предпоследнее сообщение
+            test_message = [all_messages[-2]]
+            logger.info(f"✅ Для теста выбран пост ID {test_message[0].id} (предпоследний из {len(all_messages)})")
+            return test_message
+            
         except Exception as e:
             logger.error(f"❌ Ошибка получения сообщений: {e}")
-        
-        return new_messages
+            return []
+    # =============================================
     
     async def connect_to_telegram(self) -> bool:
         """Подключение к Telegram"""
@@ -244,10 +259,10 @@ class TelegramParser:
             return False
     
     async def parse_channel(self):
-        """Основной метод парсинга канала"""
+        """Основной метод парсинга канала (ТЕСТОВАЯ ВЕРСИЯ)"""
         try:
             logger.info("=" * 50)
-            logger.info("🚀 Запуск парсера Telegram")
+            logger.info("🚀 Запуск парсера Telegram (ТЕСТ: скачивание предпоследнего поста)")
             logger.info("=" * 50)
             
             # Подключаемся к Telegram
@@ -271,24 +286,20 @@ class TelegramParser:
                 logger.error(f"❌ Не удалось получить канал: {e}")
                 return
             
-            # Получаем последний обработанный ID
-            last_id = await self.get_last_processed_id()
-            logger.info(f"📄 Последний обработанный ID: {last_id}")
+            # ИСПОЛЬЗУЕМ НОВЫЙ ТЕСТОВЫЙ МЕТОД для получения предпоследнего поста
+            test_messages = await self.get_test_messages(channel, limit=2)
             
-            # Получаем новые сообщения
-            new_messages = await self.get_new_messages(channel, last_id, limit=100)
-            
-            if not new_messages:
-                logger.info("📭 Новых сообщений нет")
+            if not test_messages:
+                logger.info("📭 Не удалось получить предпоследний пост для теста.")
                 await self.client.disconnect()
                 return
             
-            logger.info(f"📄 Получено новых сообщений: {len(new_messages)}")
+            logger.info(f"📄 Для теста получен 1 пост (предпоследний).")
             
-            # Обрабатываем сообщения
-            for idx, message in enumerate(new_messages, 1):
+            # Обрабатываем сообщение
+            for idx, message in enumerate(test_messages, 1):
                 logger.info(f"\n{'─' * 40}")
-                logger.info(f"📄 [{idx}/{len(new_messages)}] ID {message.id} от {message.date.strftime('%Y-%m-%d %H:%M:%S')}")
+                logger.info(f"📄 [ТЕСТ/{idx}] ID {message.id} от {message.date.strftime('%Y-%m-%d %H:%M:%S')}")
                 
                 # Создаем папку для поста
                 folder_path = self._create_post_folder(message)
@@ -297,15 +308,12 @@ class TelegramParser:
                 # Сохраняем данные поста
                 await self._save_post_data(message, folder_path)
                 
-                # Сохраняем последний обработанный ID
-                await self.save_last_processed_id(message.id)
-                
-                # Небольшая задержка между обработкой сообщений
+                # Небольшая задержка
                 await asyncio.sleep(0.5)
             
             logger.info(f"\n{'=' * 50}")
-            logger.info(f"🎉 Обработано: {len(new_messages)} новых постов")
-            logger.info(f"📁 Посты сохранены в: {self.data_dir}")
+            logger.info(f"🎉 ТЕСТ УСПЕШНО ЗАВЕРШЕН: Обработан 1 тестовый пост (предпоследний)")
+            logger.info(f"📁 Пост сохранен в: {self.data_dir}")
             logger.info(f"{'=' * 50}")
             
         except FloodWaitError as e:
