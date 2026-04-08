@@ -14,7 +14,7 @@ ENV/
 cookies_9111.ru.txt
 
 # Sessions (важно!)
-sessions/
+# sessions/
 *.session
 *.session-journal
 
