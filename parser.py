@@ -183,29 +183,7 @@ class TelegramParser:
             # Обновляем метаданные
             with open(meta_file, 'w', encoding='utf-8') as f:
                 json.dump(metadata, f, ensure_ascii=False, indent=2)
-        
-        # Публикация на сайте ОТКЛЮЧЕНА (будет выполняться отдельным workflow)
-        # Посты сохраняются в data/posts/ для последующей публикации
     
-    async def get_last_processed_id(self) -> int:
-        """Получение последнего обработанного ID сообщения"""
-        if self.state_file.exists():
-            try:
-                with open(self.state_file, 'r') as f:
-                    content = f.read().strip()
-                    if content:
-                        return int(content)
-            except (ValueError, IOError):
-                return 0
-        return 0
-    
-    async def save_last_processed_id(self, message_id: int):
-        """Сохранение последнего обработанного ID сообщения"""
-        with open(self.state_file, 'w') as f:
-            f.write(str(message_id))
-        logger.info(f"✅ Состояние сохранено: ID {message_id}")
-    
-    # ========== ИЗМЕНЕННЫЙ МЕТОД ДЛЯ ТЕСТА ==========
     async def get_test_messages(self, channel, limit: int = 2) -> List[Message]:
         """
         ТЕСТОВЫЙ метод: получает последние N сообщений и возвращает ПРЕДПОСЛЕДНЕЕ.
@@ -238,7 +216,6 @@ class TelegramParser:
         except Exception as e:
             logger.error(f"❌ Ошибка получения сообщений: {e}")
             return []
-    # =============================================
     
     async def connect_to_telegram(self) -> bool:
         """Подключение к Telegram"""
