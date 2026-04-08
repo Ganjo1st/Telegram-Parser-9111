@@ -472,4 +472,194 @@ def publish_post(driver, post_folder: Path, state: dict) -> bool:
         safe_click(driver, title_input)
         driver.execute_script("arguments[0].innerHTML = '';", title_input)
         human_type(title_input, title)
-        random_sleep(2, 
+        random_sleep(2, 4)
+
+        # Рубрика
+        try:
+            rubric = WebDriverWait(driver, 10).until(
+                EC.element_to_be_clickable((By.ID, "rubric_id2"))
+            )
+            safe_click(driver, rubric)
+            random_sleep(1, 2)
+            driver.find_element(By.XPATH, "//option[contains(text(), 'Новости')]").click()
+            logger.info("   ✅ Выбрана рубрика 'Новости'")
+        except:
+            pass
+        random_sleep(2, 3)
+
+        # Текст
+        editor = WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.ID, "lite_editor_container"))
+        )
+        safe_click(driver, editor)
+        driver.execute_script("arguments[0].innerHTML = '';", editor)
+
+        for p in post_text.split('\n'):
+            if p.strip():
+                driver.execute_script(f"arguments[0].innerHTML += '<p>{p.strip()}</p>';", editor)
+                random_sleep(0.2, 0.5)
+
+        random_sleep(3, 5)
+
+        # Изображение
+        if image_path and image_path.exists():
+            upload_image(driver, image_path)
+
+        # Теги
+        tags_input = WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.ID, "tag_list_input"))
+        )
+        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", tags_input)
+        random_sleep(0.5, 1)
+        driver.execute_script("arguments[0].click();", tags_input)
+        random_sleep(0.5, 1)
+        tags_input.clear()
+        human_type(tags_input, generate_tags(post_text))
+        random_sleep(2, 4)
+
+        # Публикация
+        publish_btn = WebDriverWait(driver, 15).until(
+            EC.element_to_be_clickable((By.ID, "button_create_pubs"))
+        )
+        random_mouse_move(driver)
+        safe_click(driver, publish_btn)
+        random_sleep(8, 12)
+
+        mark_as_published(title, state)
+        logger.info(f"   🎉 Опубликовано!")
+
+        # Перемещаем в архив
+        PUBLISHED_DIR.mkdir(exist_ok=True)
+        dest = PUBLISHED_DIR / post_folder.name
+        shutil.move(str(post_folder), str(dest))
+        logger.info(f"   📦 Пост перемещен в {PUBLISHED_DIR}")
+
+        return True
+
+    except Exception as e:
+        logger.error(f"   ❌ Ошибка: {e}")
+        try:
+            driver.save_screenshot("publish_error.png")
+            logger.info("   📸 Скриншот сохранен как publish_error.png")
+        except:
+            pass
+        return False
+
+
+def main():
+    logger.info("=" * 60)
+    if TEST_MODE:
+        logger.info("🧪 ТЕСТОВЫЙ РЕЖИМ: Будет опубликован ТОЛЬКО ПРЕДПОСЛЕДНИЙ пост")
+    else:
+        logger.info("🚀 ЗАПУСК ПУБЛИКАТОРА (полный режим)")
+    logger.info("=" * 60)
+
+    if not COOKIES_FILE.exists():
+        logger.error(f"❌ Файл с куками не найден: {COOKIES_FILE}")
+        sys.exit(1)
+
+    # Получаем список постов
+    if TEST_MODE:
+        post_to_publish = get_second_last_post()
+        if not post_to_publish:
+            logger.error("❌ Не найден предпоследний пост для тестовой публикации")
+            logger.info("   Убедитесь, что в data/posts есть минимум 2 поста")
+            sys.exit(1)
+        posts_list = [post_to_publish]
+        logger.info(f"🧪 ТЕСТ: Будет опубликован пост: {post_to_publish.name}")
+    else:
+        all_posts = [p for p in POSTS_DIR.iterdir() if p.is_dir()]
+        if not all_posts:
+            logger.info("📭 Нет постов для публикации.")
+            return
+        posts_list = all_posts
+        logger.info(f"📊 Найдено постов: {len(posts_list)}")
+
+    # Загружаем состояние
+    state = load_state()
+    state = reset_daily_counter(state)
+
+    # Фильтруем новые посты
+    new_posts = []
+    for post in posts_list:
+        title, _, _ = parse_post_file(post)
+        if title and not is_already_published(title, state):
+            new_posts.append(post)
+            logger.info(f"   ✅ Новый пост: {title[:50]}...")
+        elif title:
+            logger.info(f"   ⏭️ Уже опубликован: {title[:50]}...")
+
+    if not new_posts:
+        logger.info("📭 Нет новых постов для публикации.")
+        return
+
+    # Получаем рабочий прокси
+    all_proxies = download_proxies()
+    current_proxy = find_working_proxy(all_proxies)
+    
+    if not current_proxy:
+        logger.error("❌ Нет рабочих прокси. Публикация невозможна.")
+        return
+    
+    # Запускаем браузер
+    driver = setup_driver_with_proxy(current_proxy)
+    
+    try:
+        # Авторизация через куки
+        if not authenticate_with_cookies(driver, COOKIES_FILE):
+            logger.error("❌ Не удалось авторизоваться")
+            driver.quit()
+            sys.exit(1)
+        
+        published_count = 0
+        proxy_fail_count = 0
+        
+        for i, post_folder in enumerate(new_posts, 1):
+            if not can_publish_today(state):
+                logger.warning(f"⏸️ Лимит {MAX_PUBLISH_PER_DAY} достигнут.")
+                break
+            
+            logger.info(f"\n{'='*50}")
+            logger.info(f"📌 Пост {i}/{len(new_posts)}")
+            
+            success = publish_post(driver, post_folder, state)
+            
+            if success:
+                published_count += 1
+                proxy_fail_count = 0
+                if i < len(new_posts):
+                    pause = random.randint(180, 600)  # 3-10 минут
+                    logger.info(f"⏳ Пауза {pause} сек перед следующим постом...")
+                    time.sleep(pause)
+            else:
+                proxy_fail_count += 1
+                logger.warning(f"   ⚠️ Ошибка публикации (попытка {proxy_fail_count}/{MAX_PROXY_RETRIES})")
+                
+                if proxy_fail_count >= MAX_PROXY_RETRIES:
+                    logger.info("   🔄 Смена прокси...")
+                    driver.quit()
+                    
+                    available_proxies = [p for p in all_proxies if p != current_proxy]
+                    current_proxy = find_working_proxy(available_proxies)
+                    
+                    if current_proxy:
+                        driver = setup_driver_with_proxy(current_proxy)
+                        if not authenticate_with_cookies(driver, COOKIES_FILE):
+                            logger.error("   ❌ Не удалось авторизоваться с новым прокси")
+                            break
+                        proxy_fail_count = 0
+                        logger.info("   ✅ Прокси сменен, продолжаем...")
+                    else:
+                        logger.error("   ❌ Нет рабочих прокси. Остановка.")
+                        break
+                else:
+                    time.sleep(30)
+        
+        logger.info(f"\n📊 ИТОГИ: Опубликовано {published_count} из {len(new_posts)} новых постов.")
+        
+    finally:
+        driver.quit()
+
+
+if __name__ == "__main__":
+    main()
