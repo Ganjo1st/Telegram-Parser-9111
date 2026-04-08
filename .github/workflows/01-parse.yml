@@ -1,48 +1,62 @@
-name: 01 - Parse Telegram
+name: Parse Telegram Channel
 
 on:
-  schedule:
-    - cron: '*/30 * * * *'  # Каждые 30 минут
   workflow_dispatch:
+    inputs:
+      test_mode:
+        description: 'Test mode (only second-last post)'
+        required: false
+        default: 'true'
+        type: boolean
+  schedule:
+    - cron: '*/30 * * * *'
 
 jobs:
   parse:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
+    runs-on: ubuntu-24.04
     steps:
-      - name: Checkout repository
+      - name: Checkout code
         uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          fetch-depth: 1
 
-      - name: Set up Python
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+
+      - name: Clean corrupted session file
+        run: |
+          # Удаляем повреждённый файл сессии, если он есть
+          if [ -f "sessions/telegram_session.session" ]; then
+            echo "⚠️ Проверяем файл сессии..."
+            # Проверяем, является ли файл валидной SQLite базой
+            if ! sqlite3 sessions/telegram_session.session "SELECT name FROM sqlite_master;" 2>/dev/null; then
+              echo "❌ Файл сессии повреждён, удаляем..."
+              rm -f sessions/telegram_session.session
+              echo "✅ Файл сессии удалён"
+            else
+              echo "✅ Файл сессии корректен"
+            fi
+          fi
 
       - name: Install dependencies
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run Telegram Parser
+      - name: Run parser
         env:
           API_ID: ${{ secrets.API_ID }}
           API_HASH: ${{ secrets.API_HASH }}
           PHONE_NUMBER: ${{ secrets.PHONE_NUMBER }}
           CHANNEL_ID: ${{ secrets.CHANNEL_ID }}
           PASSWORD: ${{ secrets.PASSWORD }}
-          DISABLE_PUBLISHING: "true"
+          DISABLE_PUBLISHING: ${{ github.event.inputs.test_mode == 'true' && 'true' || 'false' }}
         run: python parser.py
 
-      - name: Commit and push changes
+      - name: Commit and push parsed posts
         run: |
           git config --local user.name "github-actions[bot]"
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
-          # Добавляем ВСЕ файлы, включая папки с постами
-          git add data/posts/ data/last_id.txt
-          git add -f data/posts/*/  # Принудительно добавляем папки
-          git diff --quiet && git diff --staged --quiet || git commit -m "Update posts from Telegram $(date +'%Y-%m-%d %H:%M:%S')" || true
-          git push
+          git add data/posts/ || true
+          git diff --quiet && git diff --staged --quiet || git commit -m "Add parsed posts $(date +'%Y-%m-%d %H:%M:%S')" || true
+          git push || true
