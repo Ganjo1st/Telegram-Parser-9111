@@ -1,0 +1,127 @@
+name: Auth Telegram & Create Session
+
+on:
+  workflow_dispatch:
+    inputs:
+      phone_code:
+        description: 'Код из Telegram (если уже отправили)'
+        required: false
+        default: ''
+        type: string
+      resend_code:
+        description: 'Отправить код заново?'
+        required: false
+        default: 'false'
+        type: boolean
+
+jobs:
+  auth:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Telethon
+        run: |
+          pip install telethon python-dotenv
+
+      - name: Create auth script
+        run: |
+          cat > auth.py << 'EOF'
+          import os
+          import asyncio
+          import sys
+          from pathlib import Path
+          from telethon import TelegramClient
+          
+          async def main():
+              api_id = int(os.environ['API_ID'])
+              api_hash = os.environ['API_HASH']
+              phone = os.environ['PHONE_NUMBER']
+              password = os.environ.get('PASSWORD', '')
+              
+              # Создаём директорию для сессий
+              Path('sessions').mkdir(exist_ok=True)
+              session_file = 'sessions/telegram_session.session'
+              
+              # Удаляем старый файл если есть
+              if os.path.exists(session_file):
+                  os.remove(session_file)
+                  print("🗑️ Старый файл сессии удалён")
+              
+              client = TelegramClient(session_file, api_id, api_hash)
+              
+              await client.connect()
+              
+              phone_code = os.environ.get('PHONE_CODE', '')
+              
+              if not await client.is_user_authorized():
+                  if phone_code:
+                      # Вход с кодом
+                      print(f"🔐 Вход с кодом: {phone_code}")
+                      try:
+                          await client.sign_in(phone, code=phone_code)
+                          print("✅ Успешная авторизация!")
+                      except Exception as e:
+                          print(f"❌ Ошибка: {e}")
+                          if 'password' in str(e).lower():
+                              if password:
+                                  await client.sign_in(password=password)
+                                  print("✅ Успешная авторизация (2FA)!")
+                          sys.exit(1)
+                  else:
+                      # Отправляем код
+                      print("📱 Отправка кода подтверждения...")
+                      await client.send_code_request(phone)
+                      print("✅ Код отправлен!")
+                      print("⚠️ Теперь запустите workflow снова с параметром phone_code")
+                      sys.exit(2)
+              else:
+                  print("✅ Уже авторизованы!")
+              
+              # Проверяем авторизацию
+              me = await client.get_me()
+              print(f"✅ Подключены как: {me.first_name} {me.last_name or ''}")
+              
+              await client.disconnect()
+              print(f"✅ Файл сессии сохранён: {session_file}")
+          
+          if __name__ == '__main__':
+              asyncio.run(main())
+          EOF
+
+      - name: Run auth
+        env:
+          API_ID: ${{ secrets.API_ID }}
+          API_HASH: ${{ secrets.API_HASH }}
+          PHONE_NUMBER: ${{ secrets.PHONE_NUMBER }}
+          PASSWORD: ${{ secrets.PASSWORD }}
+          PHONE_CODE: ${{ github.event.inputs.phone_code }}
+        run: python auth.py
+        continue-on-error: true
+
+      - name: Upload session file
+        uses: actions/upload-artifact@v4
+        with:
+          name: telegram-session
+          path: sessions/telegram_session.session
+          if-no-files-found: ignore
+
+      - name: Commit session file
+        if: success()
+        run: |
+          if [ -f "sessions/telegram_session.session" ]; then
+            git config --local user.name "github-actions[bot]"
+            git config --local user.email "github-actions[bot]@users.noreply.github.com"
+            git add sessions/telegram_session.session
+            git commit -m "Add valid telegram session $(date +'%Y-%m-%d %H:%M:%S')" || true
+            git push || true
+            echo "✅ Файл сессии загружен в репозиторий!"
+          else
+            echo "⚠️ Файл сессии не создан"
+          fi
