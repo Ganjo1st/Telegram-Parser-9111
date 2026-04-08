@@ -4,6 +4,7 @@
 Standalone Publisher for 9111.ru with Selenium anti-detection.
 Uses cookies for authentication + Russian proxies for bypassing blocks.
 TEST MODE: Publishes ONLY the SECOND-LAST post from Telegram channel.
+Supports source attribution from posts_meta.json
 """
 
 import os
@@ -16,7 +17,7 @@ import hashlib
 import logging
 from pathlib import Path
 from datetime import datetime, date
-from typing import Optional, Tuple, List
+from typing import Optional, Tuple, List, Dict
 
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -35,6 +36,7 @@ POSTS_DIR = Path("data/posts")
 PUBLISHED_DIR = Path("published")
 STATE_FILE = Path("publisher_state.json")
 COOKIES_FILE = Path("cookies_9111.ru.txt")
+META_FILE = Path("posts_meta.json")  # Файл с мета-информацией от Telegram_news
 MAX_PUBLISH_PER_DAY = 8
 MAX_PROXY_RETRIES = 3
 TEST_MODE = os.getenv('TEST_PUBLISHER', 'true').lower() == 'true'  # ТЕСТОВЫЙ РЕЖИМ ПО УМОЛЧАНИЮ
@@ -99,7 +101,7 @@ def find_working_proxy(proxies_list: List[str]) -> Optional[str]:
     
     random.shuffle(proxies_list)
     
-    # Сначала проверяем российские прокси (содержат .ru или 2.2.2.2 формат)
+    # Сначала проверяем российские прокси
     russian_proxies = [p for p in proxies_list if '.ru' in p.lower() or p.startswith(('5.', '2.', '85.', '88.', '91.', '92.', '93.', '94.', '95.', '176.', '178.', '185.', '188.', '193.', '194.', '195.', '212.', '213.', '217.'))]
     other_proxies = [p for p in proxies_list if p not in russian_proxies]
     
@@ -241,6 +243,85 @@ def authenticate_with_cookies(driver, cookies_file: Path) -> bool:
         return False
 
 
+def load_meta_data() -> Dict:
+    """Загружает мета-данные из posts_meta.json"""
+    if not META_FILE.exists():
+        logger.warning(f"⚠️ Файл {META_FILE} не найден, источник добавлен не будет")
+        return {}
+    
+    try:
+        with open(META_FILE, 'r', encoding='utf-8') as f:
+            meta_data = json.load(f)
+            logger.info(f"✅ Загружены мета-данные из {META_FILE}")
+            return meta_data
+    except Exception as e:
+        logger.error(f"❌ Ошибка загрузки мета-данных: {e}")
+        return {}
+
+
+def get_source_for_post(post_folder: Path, meta_data: Dict) -> Optional[Tuple[str, str]]:
+    """
+    Получает источник для поста на основе имени папки или содержимого.
+    Возвращает (source_name, source_url) или None
+    """
+    folder_name = post_folder.name
+    
+    # Пытаемся найти по имени папки
+    if "posts" in meta_data:
+        # Ищем точное совпадение имени папки
+        if folder_name in meta_data["posts"]:
+            post_info = meta_data["posts"][folder_name]
+            source_name = post_info.get("source", "")
+            source_url = post_info.get("url", "")
+            if source_url:
+                logger.info(f"   🔗 Найден источник для {folder_name}: {source_url}")
+                return (source_name, source_url)
+        
+        # Если не нашли по имени, пробуем найти по содержимому (первая строка текста)
+        text_file = post_folder / "text.txt"
+        if text_file.exists():
+            with open(text_file, 'r', encoding='utf-8') as f:
+                first_line = f.readline().strip()
+            
+            # Ищем пост, у которого original_title начинается с first_line
+            for key, post_info in meta_data["posts"].items():
+                original_title = post_info.get("original_title", "")
+                if original_title and original_title.startswith(first_line[:50]):
+                    source_name = post_info.get("source", "")
+                    source_url = post_info.get("url", "")
+                    if source_url:
+                        logger.info(f"   🔗 Найден источник по заголовку: {source_url}")
+                        return (source_name, source_url)
+    
+    return None
+
+
+def add_source_to_content(post_text: str, source_info: Optional[Tuple[str, str]]) -> str:
+    """
+    Добавляет ссылку на источник в конец текста новым абзацем.
+    Формат: "📌 Источник: [URL]"
+    """
+    if not source_info:
+        return post_text
+    
+    source_name, source_url = source_info
+    
+    # Формируем строку источника
+    if source_name:
+        source_line = f"\n\n📌 Источник: {source_name} - {source_url}"
+    else:
+        source_line = f"\n\n📌 Источник: {source_url}"
+    
+    # Проверяем, не превысит ли длина лимит (если есть ограничение)
+    if len(post_text) + len(source_line) > 4000:
+        # Обрезаем текст, чтобы влез источник
+        max_text_len = 4000 - len(source_line) - 100
+        if len(post_text) > max_text_len:
+            post_text = post_text[:max_text_len] + "..."
+    
+    return post_text + source_line
+
+
 def get_second_last_post() -> Optional[Path]:
     """Возвращает папку предпоследнего поста (для ТЕСТОВОГО режима)"""
     if not POSTS_DIR.exists():
@@ -361,8 +442,9 @@ def mark_as_published(title: str, state: dict):
     save_state(state)
 
 
-def parse_post_file(post_folder: Path) -> Tuple[Optional[str], Optional[str], Optional[Path]]:
-    """Читает файл поста и извлекает заголовок, текст и изображение"""
+def parse_post_file(post_folder: Path, meta_data: Dict) -> Tuple[Optional[str], Optional[str], Optional[Path]]:
+    """Читает файл поста и извлекает заголовок, текст и изображение.
+       Добавляет источник из meta_data, если найден."""
     text_file = post_folder / "text.txt"
     if not text_file.exists():
         return None, None, None
@@ -389,6 +471,15 @@ def parse_post_file(post_folder: Path) -> Tuple[Optional[str], Optional[str], Op
         title = title[:147] + "..."
 
     post_text = "\n".join(lines[1:]) if len(lines) > 1 else ""
+    
+    # Добавляем источник, если он есть в мета-данных
+    source_info = get_source_for_post(post_folder, meta_data)
+    if source_info:
+        post_text = add_source_to_content(post_text, source_info)
+        logger.info(f"   🔗 Добавлен источник: {source_info[1]}")
+    else:
+        logger.info(f"   ℹ️ Источник для поста не найден в posts_meta.json")
+    
     images = list(post_folder.glob("image.*"))
     image_path = images[0] if images else None
 
@@ -429,11 +520,11 @@ def upload_image(driver, image_path: Path) -> bool:
         return False
 
 
-def publish_post(driver, post_folder: Path, state: dict) -> bool:
-    """Публикует один пост"""
+def publish_post(driver, post_folder: Path, state: dict, meta_data: Dict) -> bool:
+    """Публикует один пост с учетом источника из мета-данных"""
     logger.info(f"\n📂 Пост: {post_folder.name}")
 
-    title, post_text, image_path = parse_post_file(post_folder)
+    title, post_text, image_path = parse_post_file(post_folder, meta_data)
     if not title or not post_text:
         logger.warning("   ⚠️ Не удалось прочитать пост")
         return False
@@ -447,6 +538,7 @@ def publish_post(driver, post_folder: Path, state: dict) -> bool:
         return False
 
     logger.info(f"   📝 Публикуем: {title[:50]}...")
+    logger.info(f"   📄 Длина текста с источником: {len(post_text)} символов")
 
     try:
         # Переходим на страницу создания публикации
@@ -487,16 +579,19 @@ def publish_post(driver, post_folder: Path, state: dict) -> bool:
             pass
         random_sleep(2, 3)
 
-        # Текст
+        # Текст (уже с источником)
         editor = WebDriverWait(driver, 10).until(
             EC.presence_of_element_located((By.ID, "lite_editor_container"))
         )
         safe_click(driver, editor)
         driver.execute_script("arguments[0].innerHTML = '';", editor)
 
+        # Разбиваем текст на абзацы и вставляем
         for p in post_text.split('\n'):
             if p.strip():
-                driver.execute_script(f"arguments[0].innerHTML += '<p>{p.strip()}</p>';", editor)
+                # Экранируем специальные символы для безопасной вставки
+                clean_p = p.strip().replace('"', '&quot;').replace("'", '&#39;')
+                driver.execute_script(f"arguments[0].innerHTML += '<p>{clean_p}</p>';", editor)
                 random_sleep(0.2, 0.5)
 
         random_sleep(3, 5)
@@ -554,6 +649,9 @@ def main():
         logger.info("🚀 ЗАПУСК ПУБЛИКАТОРА (полный режим)")
     logger.info("=" * 60)
 
+    # Загружаем мета-данные для источников
+    meta_data = load_meta_data()
+
     if not COOKIES_FILE.exists():
         logger.error(f"❌ Файл с куками не найден: {COOKIES_FILE}")
         sys.exit(1)
@@ -582,7 +680,7 @@ def main():
     # Фильтруем новые посты
     new_posts = []
     for post in posts_list:
-        title, _, _ = parse_post_file(post)
+        title, _, _ = parse_post_file(post, meta_data)
         if title and not is_already_published(title, state):
             new_posts.append(post)
             logger.info(f"   ✅ Новый пост: {title[:50]}...")
@@ -622,7 +720,7 @@ def main():
             logger.info(f"\n{'='*50}")
             logger.info(f"📌 Пост {i}/{len(new_posts)}")
             
-            success = publish_post(driver, post_folder, state)
+            success = publish_post(driver, post_folder, state, meta_data)
             
             if success:
                 published_count += 1
