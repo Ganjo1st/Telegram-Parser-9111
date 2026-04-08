@@ -4,23 +4,24 @@ __pycache__/
 *$py.class
 *.so
 .Python
-
-# Virtual Environment
-venv/
 env/
+venv/
 ENV/
+.venv
 
-# Session files - НЕ ИГНОРИРУЕМ!
-# sessions/ - теперь коммитим
-
-# Data files - коммитим папки с постами, но не их содержимое?
-# На самом деле нам нужно коммитить папки, чтобы публикатор их видел
-
-# Environment variables
+# Secrets
 .env
-*.env
+cookies_9111.ru.txt
 
-# Logs
+# Sessions (важно!)
+sessions/
+*.session
+*.session-journal
+
+# Data (кроме .gitkeep)
+data/posts/
+published/
+publisher_state.json
 *.log
 
 # IDE
@@ -33,6 +34,6 @@ ENV/
 .DS_Store
 Thumbs.db
 
-# Cache
-.cache/
-.pytest_cache/
+# Chrome Driver
+chromedriver
+geckodriver
