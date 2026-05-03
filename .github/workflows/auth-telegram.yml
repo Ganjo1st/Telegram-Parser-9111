@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       phone_code:
-        description: 'Код из Telegram (после отправки)'
+        description: 'Код из Telegram (6 цифр)'
         required: false
         default: ''
         type: string
@@ -36,8 +36,10 @@ jobs:
           import os
           import asyncio
           import sys
+          import json
           from pathlib import Path
           from telethon import TelegramClient
+          from telethon.errors import FloodWaitError
           
           async def main():
               api_id = int(os.environ['API_ID'])
@@ -48,42 +50,65 @@ jobs:
               Path('sessions').mkdir(exist_ok=True)
               session_file = 'sessions/telegram_session.session'
               
-              if os.path.exists(session_file):
+              # Удаляем старый файл сессии при первом запуске или при повторной отправке кода
+              if os.environ.get('RESEND_CODE') == 'true' and os.path.exists(session_file):
                   os.remove(session_file)
-                  print("🗑️ Старый файл сессии удалён")
+                  print("🗑️ Старый файл сессии удалён для повторной отправки кода")
               
               client = TelegramClient(session_file, api_id, api_hash)
               await client.connect()
               
               phone_code = os.environ.get('PHONE_CODE', '')
+              resend = os.environ.get('RESEND_CODE') == 'true'
               
               if not await client.is_user_authorized():
-                  if phone_code:
+                  if phone_code and not resend:
+                      # Пытаемся войти с кодом
                       print(f"🔐 Вход с кодом: {phone_code}")
                       try:
+                          # Пробуем обычный вход
                           await client.sign_in(phone, code=phone_code)
                           print("✅ Успешная авторизация!")
                       except Exception as e:
-                          if 'password' in str(e).lower() and password:
+                          error_str = str(e).lower()
+                          if 'phone_code_hash' in error_str:
+                              print("⚠️ Требуется phone_code_hash. Отправляем код заново...")
+                              # Отправляем код заново
+                              await client.send_code_request(phone)
+                              print("✅ Код отправлен повторно!")
+                              print("⚠️ Запустите workflow снова с тем же кодом (не отправляйте новый)")
+                              sys.exit(2)
+                          elif 'password' in error_str and password:
                               await client.sign_in(password=password)
                               print("✅ Успешная авторизация (2FA)!")
                           else:
                               print(f"❌ Ошибка: {e}")
                               sys.exit(1)
                   else:
+                      # Отправляем код
                       print("📱 Отправка кода подтверждения...")
-                      await client.send_code_request(phone)
-                      print("✅ Код отправлен!")
-                      print("⚠️ Запустите workflow снова, указав phone_code")
-                      sys.exit(2)
+                      try:
+                          await client.send_code_request(phone)
+                          print("✅ Код отправлен!")
+                          print("⚠️ Теперь запустите workflow СНОВА с тем же phone_code (не отправляйте новый код)")
+                          print("⚠️ ВНИМАНИЕ: Используйте ТОТ ЖЕ САМЫЙ код, который пришёл в Telegram")
+                          sys.exit(2)
+                      except FloodWaitError as e:
+                          print(f"⚠️ Flood wait: нужно подождать {e.seconds} секунд")
+                          sys.exit(1)
               else:
                   print("✅ Уже авторизованы!")
               
-              me = await client.get_me()
-              print(f"✅ Подключены как: {me.first_name} {me.last_name or ''}")
+              # Проверяем авторизацию
+              try:
+                  me = await client.get_me()
+                  print(f"✅ Подключены как: {me.first_name} {me.last_name or ''}")
+                  print(f"✅ Файл сессии сохранён: {session_file}")
+              except Exception as e:
+                  print(f"❌ Не удалось получить информацию: {e}")
+                  sys.exit(1)
               
               await client.disconnect()
-              print(f"✅ Файл сессии сохранён: {session_file}")
           
           if __name__ == '__main__':
               asyncio.run(main())
@@ -96,20 +121,22 @@ jobs:
           PHONE_NUMBER: ${{ secrets.PHONE_NUMBER }}
           PASSWORD: ${{ secrets.PASSWORD }}
           PHONE_CODE: ${{ github.event.inputs.phone_code }}
+          RESEND_CODE: ${{ github.event.inputs.resend_code }}
         run: python auth_script.py
         continue-on-error: true
 
       - name: Commit and push session
         if: success()
         run: |
-          if [ -f "sessions/telegram_session.session" ]; then
+          if [ -f "sessions/telegram_session.session" ] && [ -s "sessions/telegram_session.session" ]; then
             git config --local user.name "github-actions[bot]"
             git config --local user.email "github-actions[bot]@users.noreply.github.com"
             git add sessions/telegram_session.session
             git commit -m "Update telegram session $(date +'%Y-%m-%d %H:%M:%S')" || true
             git push || true
             echo "✅ Файл сессии обновлён в репозитории!"
+            ls -la sessions/
           else
-            echo "⚠️ Файл сессии не создан"
+            echo "⚠️ Файл сессии не создан или пуст"
             exit 1
           fi
