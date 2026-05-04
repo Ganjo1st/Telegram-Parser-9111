@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 Telegram Parser for 9111.ru
-Парсинг публичных Telegram каналов (без авторизации)
+Парсинг Telegram каналов с использованием файла сессии
 """
 
 import os
@@ -17,7 +17,7 @@ from typing import Optional, List
 
 from telethon import TelegramClient
 from telethon.tl.types import Message
-from telethon.errors import FloodWaitError, UsernameNotOccupiedError
+from telethon.errors import FloodWaitError, SessionPasswordNeededError
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -33,10 +33,11 @@ class TelegramParser:
     def __init__(self):
         self.api_id = int(os.getenv('API_ID', 0))
         self.api_hash = os.getenv('API_HASH', '')
+        self.phone = os.getenv('PHONE_NUMBER', '')
         self.channel_id = os.getenv('CHANNEL_ID', '').strip()
         self.test_mode = os.getenv('TEST_MODE', 'true').lower() == 'true'
         
-        # Убираем @ в начале, если он есть (Telethon работает с username без @)
+        # Убираем @ в начале для username
         if self.channel_id.startswith('@'):
             self.channel_id = self.channel_id[1:]
         
@@ -47,8 +48,19 @@ class TelegramParser:
         self.data_dir = Path('data/posts')
         self.data_dir.mkdir(parents=True, exist_ok=True)
         
-        # Создаём клиент, НО НЕ ЗАПУСКАЕМ start()
-        self.client = TelegramClient('temp_session', self.api_id, self.api_hash)
+        # Папка для сессий
+        self.session_dir = Path('sessions')
+        self.session_dir.mkdir(parents=True, exist_ok=True)
+        
+        self.session_file = self.session_dir / 'telegram_session.session'
+        
+        if not self.session_file.exists():
+            logger.error(f"❌ Файл сессии не найден: {self.session_file}")
+            logger.info("💡 Запустите workflow Auth Telegram & Create Session для создания сессии")
+            logger.info("💡 Или скопируйте сессию из репозитория Telegram_news")
+            sys.exit(1)
+        
+        self.client = TelegramClient(str(self.session_file), self.api_id, self.api_hash)
         
         if self.test_mode:
             logger.info("🧪 ТЕСТОВЫЙ РЕЖИМ: будет скачан ТОЛЬКО предпоследний пост")
@@ -97,7 +109,6 @@ class TelegramParser:
         with open(folder_path / 'meta.json', 'w', encoding='utf-8') as f:
             json.dump(meta, f, ensure_ascii=False, indent=2)
         
-        # Сохраняем изображение
         if message.media:
             try:
                 ext = '.jpg'
@@ -127,29 +138,28 @@ class TelegramParser:
     async def run(self):
         try:
             logger.info("=" * 50)
-            logger.info("🚀 Запуск парсера Telegram (без авторизации)")
+            logger.info("🚀 Запуск парсера Telegram (с сессией)")
             logger.info(f"📡 Режим: {'ТЕСТОВЫЙ' if self.test_mode else 'ОБЫЧНЫЙ'}")
-            logger.info(f"📡 Channel ID: {self.channel_id}")
+            logger.info(f"📡 Канал: {self.channel_id}")
             logger.info("=" * 50)
             
-            # Только подключаемся, НЕ авторизуемся
             await self.client.connect()
             logger.info("✅ Подключение установлено")
             
-            # Пытаемся получить канал (username без @)
+            # Проверяем авторизацию
+            if not await self.client.is_user_authorized():
+                logger.error("❌ Сессия не авторизована!")
+                logger.info("💡 Запустите workflow Auth Telegram & Create Session")
+                return
+            
+            me = await self.client.get_me()
+            logger.info(f"✅ Подключены как: {me.first_name}")
+            
             try:
                 channel = await self.client.get_entity(self.channel_id)
                 logger.info(f"📥 Канал: {getattr(channel, 'title', self.channel_id)}")
-            except UsernameNotOccupiedError:
-                logger.error(f"❌ Канал {self.channel_id} не найден")
-                logger.info("💡 Проверьте CHANNEL_ID (должен быть без @)")
-                return
-            except ValueError as e:
-                if 'Cannot find any entity' in str(e):
-                    logger.error(f"❌ Канал не найден: {self.channel_id}")
-                    logger.info("💡 Убедитесь, что канал публичный и имя указано верно")
-                else:
-                    logger.error(f"❌ Ошибка: {e}")
+            except Exception as e:
+                logger.error(f"❌ Не удалось получить канал: {e}")
                 return
             
             if self.test_mode:
@@ -186,6 +196,8 @@ class TelegramParser:
             
         except FloodWaitError as e:
             logger.warning(f"⚠️ Flood wait: {e.seconds} секунд")
+        except SessionPasswordNeededError:
+            logger.error("❌ Требуется пароль двухфакторной аутентификации")
         except Exception as e:
             logger.error(f"❌ Ошибка: {type(e).__name__}: {e}")
         finally:
