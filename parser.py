@@ -17,7 +17,11 @@ from typing import Optional, List
 
 from telethon import TelegramClient
 from telethon.tl.types import Message
-from telethon.errors import FloodWaitError, UsernameNotOccupiedError
+from telethon.errors import (
+    FloodWaitError, 
+    UsernameNotOccupiedError,
+    UsernameInvalidError
+)
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -33,12 +37,17 @@ class TelegramParser:
     def __init__(self):
         self.api_id = int(os.getenv('API_ID', 0))
         self.api_hash = os.getenv('API_HASH', '')
-        self.channel_id = os.getenv('CHANNEL_ID', '')
+        self.channel_id = os.getenv('CHANNEL_ID', '').strip()
         self.test_mode = os.getenv('TEST_MODE', 'true').lower() == 'true'
         
         if not all([self.api_id, self.api_hash, self.channel_id]):
             logger.error("❌ Отсутствуют API_ID, API_HASH или CHANNEL_ID")
             sys.exit(1)
+        
+        # Если CHANNEL_ID начинается с @, оставляем как есть, иначе пробуем добавить @
+        if not self.channel_id.startswith('@') and not self.channel_id.startswith('-100') and not self.channel_id.startswith('https://'):
+            self.channel_id = f'@{self.channel_id}'
+            logger.info(f"📡 Автоматически добавлен @: {self.channel_id}")
         
         self.data_dir = Path('data/posts')
         self.data_dir.mkdir(parents=True, exist_ok=True)
@@ -144,22 +153,26 @@ class TelegramParser:
             try:
                 channel = await self.client.get_entity(self.channel_id)
                 channel_title = getattr(channel, 'title', str(self.channel_id))
-                logger.info(f"📥 Канал: {channel_title}")
+                logger.info(f"📥 Канал найден: {channel_title}")
+                logger.info(f"📥 Канал ID (числовой): {channel.id}")
             except UsernameNotOccupiedError:
                 logger.error(f"❌ Канал {self.channel_id} не найден")
-                logger.info("💡 Убедитесь, что CHANNEL_ID указан правильно:")
-                logger.info("   - Для публичного канала: @username (например, @novikon_news)")
-                logger.info("   - Канал должен быть публичным, иначе нужна авторизация")
+                logger.info("💡 Проверьте:")
+                logger.info(f"   1. Существует ли канал: https://t.me/{self.channel_id.lstrip('@')}")
+                logger.info("   2. Возможно, канал приватный")
+                logger.info("   3. Убедитесь, что username введён без лишних символов")
+                return
+            except UsernameInvalidError:
+                logger.error(f"❌ Неверный формат username: {self.channel_id}")
+                logger.info("💡 Username должен содержать только буквы, цифры и подчёркивания")
                 return
             except ValueError as e:
+                logger.error(f"❌ Ошибка: {e}")
                 if 'Cannot find any entity' in str(e):
-                    logger.error(f"❌ Не удалось найти канал: {self.channel_id}")
                     logger.info("💡 Возможно, канал приватный или ID указан неверно")
-                else:
-                    logger.error(f"❌ Ошибка: {e}")
                 return
             except Exception as e:
-                logger.error(f"❌ Ошибка получения канала: {e}")
+                logger.error(f"❌ Ошибка получения канала: {type(e).__name__}: {e}")
                 return
             
             if self.test_mode:
@@ -201,7 +214,7 @@ class TelegramParser:
         except FloodWaitError as e:
             logger.warning(f"⚠️ Flood wait: {e.seconds} секунд")
         except Exception as e:
-            logger.error(f"❌ Ошибка: {e}")
+            logger.error(f"❌ Ошибка: {type(e).__name__}: {e}")
         finally:
             await self.client.disconnect()
             logger.info("👋 Отключены от Telegram")
