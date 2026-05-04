@@ -22,8 +22,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install Telethon
-        run: |
-          pip install telethon python-dotenv
+        run: pip install telethon
 
       - name: Run auth
         env:
@@ -43,9 +42,9 @@ jobs:
             git add sessions/telegram_session.session
             git commit -m "Update telegram session $(date +'%Y-%m-%d %H:%M:%S')" || true
             git push || true
-            echo "✅ Файл сессии обновлён!"
+            echo "✅ Файл сессии сохранён!"
             ls -la sessions/
           else
-            echo "⚠️ Файл сессии не создан (возможно, нужно отправить код сначала)"
-            echo "📌 Запустите workflow с пустым полем phone_code для отправки кода"
+            echo "⚠️ Файл сессии не создан"
+            echo "📌 Если код отправлен, запустите workflow снова с phone_code"
           fi
