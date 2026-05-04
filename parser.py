@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 Telegram Parser for 9111.ru
-Парсинг Telegram каналов (только публичных)
+Парсинг публичных Telegram каналов (без авторизации)
 """
 
 import os
@@ -17,11 +17,7 @@ from typing import Optional, List
 
 from telethon import TelegramClient
 from telethon.tl.types import Message
-from telethon.errors import (
-    FloodWaitError, 
-    UsernameNotOccupiedError,
-    UsernameInvalidError
-)
+from telethon.errors import FloodWaitError, UsernameNotOccupiedError
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -40,26 +36,24 @@ class TelegramParser:
         self.channel_id = os.getenv('CHANNEL_ID', '').strip()
         self.test_mode = os.getenv('TEST_MODE', 'true').lower() == 'true'
         
+        # Убираем @ в начале, если он есть (Telethon работает с username без @)
+        if self.channel_id.startswith('@'):
+            self.channel_id = self.channel_id[1:]
+        
         if not all([self.api_id, self.api_hash, self.channel_id]):
             logger.error("❌ Отсутствуют API_ID, API_HASH или CHANNEL_ID")
             sys.exit(1)
         
-        # Если CHANNEL_ID начинается с @, оставляем как есть, иначе пробуем добавить @
-        if not self.channel_id.startswith('@') and not self.channel_id.startswith('-100') and not self.channel_id.startswith('https://'):
-            self.channel_id = f'@{self.channel_id}'
-            logger.info(f"📡 Автоматически добавлен @: {self.channel_id}")
-        
         self.data_dir = Path('data/posts')
         self.data_dir.mkdir(parents=True, exist_ok=True)
         
-        # Используем временную сессию (без сохранения на диск)
+        # Создаём клиент, НО НЕ ЗАПУСКАЕМ start()
         self.client = TelegramClient('temp_session', self.api_id, self.api_hash)
         
         if self.test_mode:
             logger.info("🧪 ТЕСТОВЫЙ РЕЖИМ: будет скачан ТОЛЬКО предпоследний пост")
     
     def _sanitize_filename(self, text: str, max_length: int = 100) -> str:
-        """Очистка имени файла от недопустимых символов"""
         text = re.sub(r'[<>:"/\\|?*]', '', text)
         text = re.sub(r'[\s\x00-\x1f\x7f-\x9f]+', '_', text)
         if len(text) > max_length:
@@ -68,7 +62,6 @@ class TelegramParser:
         return text if text else datetime.now().strftime('%Y%m%d_%H%M%S')
     
     async def _save_post(self, message: Message):
-        """Сохраняет пост в файловую структуру"""
         date = message.date.strftime('%Y%m%d_%H%M%S')
         text = (message.text or message.raw_text or "").strip().replace('\n', ' ')[:100]
         text = self._sanitize_filename(text)
@@ -82,13 +75,11 @@ class TelegramParser:
         folder_path.mkdir()
         logger.info(f"   📁 Папка: {folder_name}")
         
-        # Сохраняем текст
         full_text = message.text or message.raw_text or ""
         with open(folder_path / 'text.txt', 'w', encoding='utf-8') as f:
             f.write(full_text)
         logger.info(f"   ✅ Текст сохранён ({len(full_text)} символов)")
         
-        # Сохраняем метаданные
         meta = {
             'id': message.id,
             'date': message.date.isoformat(),
@@ -98,7 +89,6 @@ class TelegramParser:
             'parsed_at': datetime.now().isoformat()
         }
         
-        # Извлекаем ссылку на источник из текста
         source_url = self._extract_source_url(full_text)
         if source_url:
             meta['source_url'] = source_url
@@ -122,15 +112,12 @@ class TelegramParser:
         await asyncio.sleep(0.5)
     
     def _extract_source_url(self, text: str) -> Optional[str]:
-        """Извлекает ссылку на источник из текста сообщения"""
         if not text:
             return None
         
-        # Ищем ссылки в тексте
         url_pattern = r'https?://[^\s]+'
         urls = re.findall(url_pattern, text)
         
-        # Фильтруем ссылки: исключаем t.me, telegram и т.д.
         for url in urls:
             if 't.me' not in url and 'telegram' not in url.lower():
                 return url
@@ -138,7 +125,6 @@ class TelegramParser:
         return None
     
     async def run(self):
-        """Основной метод парсинга"""
         try:
             logger.info("=" * 50)
             logger.info("🚀 Запуск парсера Telegram (без авторизации)")
@@ -146,37 +132,27 @@ class TelegramParser:
             logger.info(f"📡 Channel ID: {self.channel_id}")
             logger.info("=" * 50)
             
+            # Только подключаемся, НЕ авторизуемся
             await self.client.connect()
             logger.info("✅ Подключение установлено")
             
-            # Пытаемся получить канал
+            # Пытаемся получить канал (username без @)
             try:
                 channel = await self.client.get_entity(self.channel_id)
-                channel_title = getattr(channel, 'title', str(self.channel_id))
-                logger.info(f"📥 Канал найден: {channel_title}")
-                logger.info(f"📥 Канал ID (числовой): {channel.id}")
+                logger.info(f"📥 Канал: {getattr(channel, 'title', self.channel_id)}")
             except UsernameNotOccupiedError:
                 logger.error(f"❌ Канал {self.channel_id} не найден")
-                logger.info("💡 Проверьте:")
-                logger.info(f"   1. Существует ли канал: https://t.me/{self.channel_id.lstrip('@')}")
-                logger.info("   2. Возможно, канал приватный")
-                logger.info("   3. Убедитесь, что username введён без лишних символов")
-                return
-            except UsernameInvalidError:
-                logger.error(f"❌ Неверный формат username: {self.channel_id}")
-                logger.info("💡 Username должен содержать только буквы, цифры и подчёркивания")
+                logger.info("💡 Проверьте CHANNEL_ID (должен быть без @)")
                 return
             except ValueError as e:
-                logger.error(f"❌ Ошибка: {e}")
                 if 'Cannot find any entity' in str(e):
-                    logger.info("💡 Возможно, канал приватный или ID указан неверно")
-                return
-            except Exception as e:
-                logger.error(f"❌ Ошибка получения канала: {type(e).__name__}: {e}")
+                    logger.error(f"❌ Канал не найден: {self.channel_id}")
+                    logger.info("💡 Убедитесь, что канал публичный и имя указано верно")
+                else:
+                    logger.error(f"❌ Ошибка: {e}")
                 return
             
             if self.test_mode:
-                # Тестовый режим: предпоследний пост
                 messages = []
                 async for msg in self.client.iter_messages(channel, limit=2):
                     messages.append(msg)
@@ -191,14 +167,11 @@ class TelegramParser:
                 await self._save_post(test_message)
                 logger.info(f"\n🎉 ТЕСТ ЗАВЕРШЁН: Сохранён 1 пост")
             else:
-                # Обычный режим: последние 5 постов
                 saved_count = 0
                 async for msg in self.client.iter_messages(channel, limit=5):
-                    # Проверяем, не сохранён ли уже этот пост
                     already_saved = False
-                    folder_prefix = msg.date.strftime('%Y%m%d_')
                     for existing in self.data_dir.iterdir():
-                        if existing.is_dir() and existing.name.startswith(folder_prefix):
+                        if existing.is_dir() and str(msg.id) in str(existing):
                             already_saved = True
                             break
                     
