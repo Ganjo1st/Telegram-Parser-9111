@@ -18,6 +18,7 @@ from typing import Optional
 import httpx
 from telegram import Bot
 from telegram.error import TelegramError
+from dotenv import load_dotenv  # <-- ЭТОТ ИМПОРТ БЫЛ ПРОПУЩЕН
 
 load_dotenv()
 
