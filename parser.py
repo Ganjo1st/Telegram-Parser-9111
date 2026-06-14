@@ -18,7 +18,7 @@ from typing import Optional
 import httpx
 from telegram import Bot
 from telegram.error import TelegramError
-from dotenv import load_dotenv  # <-- ЭТОТ ИМПОРТ БЫЛ ПРОПУЩЕН
+from dotenv import load_dotenv
 
 load_dotenv()
 
@@ -146,39 +146,26 @@ class TelegramParser:
                 logger.info("💡 Убедитесь, что бот добавлен в канал как администратор")
                 return
             
-            # Получаем последние сообщения
+            # Получаем последние сообщения (правильный метод для python-telegram-bot)
             try:
+                # В python-telegram-bot 21.5 используем get_chat_history через Context
+                # Но проще использовать прямые запросы к API
+                import aiohttp
+                
                 messages = []
-                async for message in self.bot.get_chat_history(chat_id=f"@{self.channel_id}", limit=5):
-                    # Пропускаем служебные сообщения
-                    if message.text or message.caption:
-                        messages.append(message)
+                url = f"https://api.telegram.org/bot{self.bot_token}/getUpdates"
                 
-                if not messages:
-                    logger.info("📭 Нет сообщений с текстом")
-                    return
+                # Также пробуем получить сообщения из канала через sendMessage? Нет, бот не может читать историю.
+                # На самом деле, боты НЕ МОГУТ читать историю сообщений в каналах.
+                # Они могут только получать сообщения, которые приходят в реальном времени.
                 
-                logger.info(f"📄 Получено {len(messages)} сообщений")
+                logger.warning("⚠️ Боты Telegram не могут читать историю сообщений в каналах!")
+                logger.warning("⚠️ Они получают только новые сообщения в реальном времени.")
+                logger.info("💡 Для парсинга истории используйте пользовательскую сессию (Telethon)")
+                return
                 
-                if self.test_mode and len(messages) >= 2:
-                    # Предпоследнее сообщение
-                    test_message = messages[-2]
-                    logger.info(f"📄 ТЕСТ: выбран предпоследний пост ID {test_message.message_id}")
-                    await self._save_post(test_message)
-                    logger.info(f"\n🎉 ТЕСТ ЗАВЕРШЁН: Сохранён 1 пост")
-                elif not self.test_mode:
-                    # Все сообщения
-                    saved_count = 0
-                    for msg in messages[:5]:
-                        await self._save_post(msg)
-                        saved_count += 1
-                    logger.info(f"\n🎉 Сохранено {saved_count} новых постов")
-                
-                logger.info(f"📁 Посты сохранены в: {self.data_dir}")
-                
-            except TelegramError as e:
+            except Exception as e:
                 logger.error(f"❌ Ошибка получения сообщений: {e}")
-                logger.info("💡 Убедитесь, что бот имеет права на чтение сообщений")
                 return
             
         except Exception as e:
