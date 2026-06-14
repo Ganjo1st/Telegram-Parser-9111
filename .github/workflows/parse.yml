@@ -32,9 +32,8 @@ jobs:
         env:
           API_ID: ${{ secrets.API_ID }}
           API_HASH: ${{ secrets.API_HASH }}
-          PHONE_NUMBER: ${{ secrets.PHONE_NUMBER }}
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHANNEL_ID: ${{ secrets.CHANNEL_ID }}
-          PASSWORD: ${{ secrets.PASSWORD }}
           TEST_MODE: ${{ github.event.inputs.test_mode == true && 'true' || 'false' }}
         run: python parser.py
 
