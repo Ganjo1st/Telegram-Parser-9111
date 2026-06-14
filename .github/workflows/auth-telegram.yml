@@ -36,15 +36,13 @@ jobs:
       - name: Commit session
         if: success()
         run: |
+          git config --local user.name "github-actions[bot]"
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
           if [ -f "sessions/telegram_session.session" ] && [ -s "sessions/telegram_session.session" ]; then
-            git config --local user.name "github-actions[bot]"
-            git config --local user.email "github-actions[bot]@users.noreply.github.com"
             git add sessions/telegram_session.session
             git commit -m "Update telegram session $(date +'%Y-%m-%d %H:%M:%S')" || true
             git push || true
-            echo "✅ Файл сессии сохранён!"
-            ls -la sessions/
+            echo "✅ Файл сессии обновлён!"
           else
             echo "⚠️ Файл сессии не создан"
-            echo "📌 Если код отправлен, запустите workflow снова с phone_code"
           fi
