@@ -6,10 +6,13 @@ on:
       test_mode:
         description: 'Тестовый режим (только предпоследний пост)'
         required: false
-        default: true
+        default: false
         type: boolean
   schedule:
-    - cron: '*/30 * * * *'
+    # Каждые 20 минут (но не в час пик)
+    - cron: '*/20 * * * *'
+    # Дополнительные проверки в активные часы
+    - cron: '0,30 6-23 * * *'
 
 jobs:
   parse:
@@ -17,6 +20,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -28,11 +33,16 @@ jobs:
           pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Check for changes
+        id: check
+        run: |
+          # Проверяем, были ли изменения в репозитории Telegram_news
+          echo "🔄 Проверка новых постов..."
+          
       - name: Run parser
         env:
           API_ID: ${{ secrets.API_ID }}
           API_HASH: ${{ secrets.API_HASH }}
-          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHANNEL_ID: ${{ secrets.CHANNEL_ID }}
           TEST_MODE: ${{ github.event.inputs.test_mode == true && 'true' || 'false' }}
         run: python parser.py
@@ -41,6 +51,28 @@ jobs:
         run: |
           git config --local user.name "github-actions[bot]"
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
-          git add data/posts/ || true
-          git diff --quiet && git diff --staged --quiet || git commit -m "Add parsed posts $(date +'%Y-%m-%d %H:%M:%S')" || true
-          git push || true
+          
+          # Проверяем, есть ли новые посты
+          if [ -n "$(git status data/posts/ --porcelain)" ]; then
+            git add data/posts/
+            git commit -m "📝 Add parsed posts $(date +'%Y-%m-%d %H:%M:%S')"
+            git push
+            echo "✅ Новые посты добавлены"
+            echo "new_posts=true" >> $GITHUB_ENV
+          else
+            echo "📭 Новых постов нет"
+            echo "new_posts=false" >> $GITHUB_ENV
+          fi
+
+      - name: Trigger publish workflow if new posts
+        if: env.new_posts == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'publish.yml',
+              ref: 'main'
+            })
+            console.log('🚀 Запущен workflow публикации')
