@@ -6,17 +6,17 @@ on:
       test_mode:
         description: 'Тестовый режим (только предпоследний пост)'
         required: false
-        default: 'true'
-        type: choice
-        options:
-          - 'true'
-          - 'false'
-  schedule:
-    - cron: '*/30 * * * *'
+        default: false
+        type: boolean
+  workflow_run:
+    workflows: ["Parse Telegram Channel"]
+    types:
+      - completed
 
 jobs:
   publish:
     runs-on: ubuntu-24.04
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -37,12 +37,6 @@ jobs:
           sudo apt-get install -y google-chrome-stable
           google-chrome --version
 
-      - name: Install zapret (optional for IP bypass)
-        run: |
-          # Установка zapret для обхода блокировок (опционально)
-          sudo apt-get install -y dnsutils
-          echo "zapret setup would go here if needed"
-
       - name: Show posts folder
         run: |
           echo "=== Содержимое data/posts ==="
@@ -50,17 +44,32 @@ jobs:
           echo "=== Количество папок ==="
           find data/posts -type d | wc -l || echo "0"
 
-      - name: Run publisher (test mode by default)
+      - name: Run publisher
         env:
           SITE_EMAIL: ${{ secrets.SITE_EMAIL }}
           SITE_PASSWORD: ${{ secrets.SITE_PASSWORD }}
-          TEST_PUBLISHER: ${{ github.event.inputs.test_mode || 'true' }}
+          TEST_PUBLISHER: ${{ github.event.inputs.test_mode == true && 'true' || 'false' }}
         run: python publisher.py
 
       - name: Commit and push published state
         run: |
           git config --local user.name "github-actions[bot]"
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # Проверяем, есть ли изменения
           git add data/posts/ published/ publisher_state.json || true
-          git diff --quiet && git diff --staged --quiet || git commit -m "Update published posts $(date +'%Y-%m-%d %H:%M:%S')" || true
-          git push || true
+          git diff --quiet && git diff --staged --quiet || (
+            git commit -m "📤 Update published posts $(date +'%Y-%m-%d %H:%M:%S')" && 
+            git push
+          ) || true
+
+      - name: Upload debug screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: publish-debug
+          path: |
+            *.png
+            publish_error.png
+            auth_error.png
+          if-no-files-found: ignore
