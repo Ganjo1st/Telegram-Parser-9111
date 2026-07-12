@@ -36,7 +36,7 @@ PUBLISHED_DIR = Path("published")
 STATE_FILE = Path("publisher_state.json")
 MAX_PUBLISH_PER_DAY = 8
 MAX_PROXY_RETRIES = 3
-MAX_PUBLISH_RETRIES = 2  # Количество попыток публикации одного поста
+MAX_PUBLISH_RETRIES = 2
 
 # Прокси из репозитория Proctor
 PROXY_SOURCES = {
@@ -104,8 +104,7 @@ def find_working_proxy(proxies_list: List[str]) -> Optional[str]:
 
     random.shuffle(proxies_list)
 
-    # Проверяем сначала российские прокси (до 10 штук)
-    for proxy in proxies_list[:10]:
+    for proxy in proxies_list[:15]:
         logger.info(f"   Проверяем: {proxy}")
         if test_proxy(proxy):
             logger.info(f"   ✅ Найден рабочий прокси: {proxy}")
@@ -132,7 +131,7 @@ def setup_driver_with_proxy(proxy: Optional[str] = None) -> webdriver.Chrome:
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--headless=new")
     options.add_argument("--disable-gpu")
-    options.add_argument("--remote-debugging-port=0")  # Отключаем дебаг порт
+    options.add_argument("--remote-debugging-port=0")
 
     # Случайный User-Agent
     ua = UserAgent()
@@ -164,12 +163,13 @@ def setup_driver_with_proxy(proxy: Optional[str] = None) -> webdriver.Chrome:
     return driver
 
 # ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
-def human_type(element, text, min_delay=0.07, max_delay=0.2):
+def human_type(element, text, min_delay=0.05, max_delay=0.15):
     """Печатает текст как человек"""
     for char in text:
         element.send_keys(char)
-        if random.random() < 0.1:
-            time.sleep(random.uniform(0.2, 0.5))
+        # Случайные задержки между символами
+        if random.random() < 0.15:
+            time.sleep(random.uniform(0.3, 0.8))
         else:
             time.sleep(random.uniform(min_delay, max_delay))
 
@@ -181,9 +181,9 @@ def random_mouse_move(driver):
     """Имитирует движение мыши"""
     try:
         action = ActionChains(driver)
-        action.move_by_offset(random.randint(-100, 100), random.randint(-80, 80))
+        action.move_by_offset(random.randint(-150, 150), random.randint(-100, 100))
         action.perform()
-        time.sleep(random.uniform(0.1, 0.3))
+        time.sleep(random.uniform(0.1, 0.4))
     except:
         pass
 
@@ -279,7 +279,6 @@ def parse_post_file(post_folder: Path) -> Tuple[Optional[str], Optional[str], Op
     
     # Ищем изображение
     image_path = None
-    # 1. Сначала ищем в image_info.json
     info_file = post_folder / "image_info.json"
     if info_file.exists():
         try:
@@ -288,16 +287,13 @@ def parse_post_file(post_folder: Path) -> Tuple[Optional[str], Optional[str], Op
                 img_path_str = post_info.get('image_path')
                 if img_path_str and Path(img_path_str).exists():
                     image_path = Path(img_path_str)
-                    logger.debug(f"   Найдено изображение через JSON: {image_path}")
         except Exception as e:
             logger.warning(f"   ⚠️ Не удалось прочитать image_info.json: {e}")
 
-    # 2. Если не нашли, ищем в папке
     if not image_path:
         images = list(post_folder.glob("image.*"))
         if images:
             image_path = images[0]
-            logger.debug(f"   Найдено изображение по маске: {image_path}")
 
     return title, post_text, image_path
 
@@ -306,9 +302,8 @@ def login_to_9111(driver, email: str, password: str) -> bool:
     logger.info("   🔑 Авторизация...")
     try:
         driver.get("https://9111.ru/")
-        random_sleep(3, 5)
+        random_sleep(4, 7)
 
-        # Ждем загрузки главной страницы
         WebDriverWait(driver, 20).until(
             EC.presence_of_element_located((By.TAG_NAME, "body"))
         )
@@ -320,52 +315,45 @@ def login_to_9111(driver, email: str, password: str) -> bool:
         )
         random_mouse_move(driver)
         login_btn.click()
-        random_sleep(2, 4)
+        random_sleep(3, 5)
 
-        # Поле email
         email_input = WebDriverWait(driver, 10).until(
             EC.presence_of_element_located((By.NAME, "email"))
         )
         email_input.click()
         email_input.clear()
         human_type(email_input, email)
-        random_sleep(1, 2)
+        random_sleep(2, 4)
 
-        # Кнопка "Войти по паролю"
         password_btn = WebDriverWait(driver, 10).until(
             EC.element_to_be_clickable((By.XPATH, "//span[contains(text(), 'Войти по паролю')]"))
         )
         random_mouse_move(driver)
         password_btn.click()
-        random_sleep(2, 3)
+        random_sleep(2, 4)
 
-        # Поле пароля
         password_input = WebDriverWait(driver, 10).until(
             EC.presence_of_element_located((By.NAME, "password"))
         )
         password_input.click()
         password_input.clear()
         human_type(password_input, password)
-        random_sleep(1, 2)
+        random_sleep(2, 4)
 
-        # Кнопка отправки
         submit_btn = WebDriverWait(driver, 10).until(
             EC.element_to_be_clickable((By.XPATH, "//input[@type='submit' and @value='Войти']"))
         )
         random_mouse_move(driver)
         submit_btn.click()
-        random_sleep(5, 7)
+        random_sleep(5, 8)
 
-        # Проверяем успешность входа
         success = len(driver.find_elements(By.CLASS_NAME, "userMenuOpen")) > 0
         if success:
             logger.info("   ✅ Авторизация успешна")
         else:
             logger.error("   ❌ Авторизация не удалась")
-            # Сохраняем скриншот для диагностики
             try:
                 driver.save_screenshot("auth_error.png")
-                logger.info("   📸 Скриншот сохранен как auth_error.png")
             except:
                 pass
         return success
@@ -374,7 +362,6 @@ def login_to_9111(driver, email: str, password: str) -> bool:
         logger.error(f"   ❌ Ошибка авторизации: {e}")
         try:
             driver.save_screenshot("auth_error.png")
-            logger.info("   📸 Скриншот сохранен как auth_error.png")
         except:
             pass
         return False
@@ -384,13 +371,14 @@ def upload_image(driver, image_path: Path) -> bool:
     try:
         logger.info(f"   📸 Загрузка изображения: {image_path.name}")
 
-        # Ищем кнопку "+ Фото"
+        # Ищем кнопку "+ Фото" разными способами
         photo_label = None
         selectors = [
             (By.XPATH, "//label[contains(@class, 'lite_editor_tools_btn') and contains(text(), '+ Фото')]"),
             (By.XPATH, "//label[contains(text(), '+ Фото')]"),
             (By.CSS_SELECTOR, "label.lite_editor_tools_btn[title*='Фото']"),
-            (By.XPATH, "//button[contains(text(), 'Фото')]")
+            (By.XPATH, "//button[contains(text(), 'Фото')]"),
+            (By.CSS_SELECTOR, "label[onclick*='upload']")
         ]
 
         for by, selector in selectors:
@@ -407,22 +395,22 @@ def upload_image(driver, image_path: Path) -> bool:
             logger.warning("   ⚠️ Кнопка '+ Фото' не найдена")
             return False
 
-        # Прокручиваем к элементу и кликаем
+        # Прокручиваем и кликаем
         driver.execute_script("arguments[0].scrollIntoView({block: 'center', behavior: 'smooth'});", photo_label)
-        random_sleep(1, 2)
+        random_sleep(1, 3)
         random_mouse_move(driver)
         photo_label.click()
-        random_sleep(2, 4)
+        random_sleep(2, 5)
 
-        # Ищем input для загрузки файла
-        file_input = WebDriverWait(driver, 10).until(
+        # Ищем input для загрузки
+        file_input = WebDriverWait(driver, 15).until(
             EC.presence_of_element_located((By.CSS_SELECTOR, "input[type='file']"))
         )
         file_input.send_keys(str(image_path.absolute()))
         logger.info(f"   ✅ Изображение загружено")
 
-        # Ждем, пока изображение появится в редакторе
-        random_sleep(3, 6)
+        # Ждем появления в редакторе
+        random_sleep(4, 8)
         return True
 
     except Exception as e:
@@ -449,9 +437,8 @@ def publish_post(driver, post_folder: Path, email: str, password: str, state: di
     logger.info(f"   📝 Публикуем: {title[:50]}...")
 
     try:
-        # ПРАВИЛЬНЫЙ URL для добавления публикации
         driver.get("https://9111.ru/pubs/add/")
-        random_sleep(4, 6)
+        random_sleep(5, 8)
 
         # Ждем загрузки страницы
         WebDriverWait(driver, 20).until(
@@ -463,9 +450,8 @@ def publish_post(driver, post_folder: Path, email: str, password: str, state: di
             if not login_to_9111(driver, email, password):
                 logger.error("   ❌ Не удалось авторизоваться")
                 return False
-            # После авторизации перезагружаем страницу добавления
             driver.get("https://9111.ru/pubs/add/")
-            random_sleep(3, 5)
+            random_sleep(5, 8)
             WebDriverWait(driver, 20).until(
                 EC.presence_of_element_located((By.ID, "topic_name"))
             )
@@ -475,20 +461,20 @@ def publish_post(driver, post_folder: Path, email: str, password: str, state: di
             EC.element_to_be_clickable((By.XPATH, "//a[contains(text(), 'Новость, статья')]"))
         )
         driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", news_link)
-        random_sleep(0.5, 1)
+        random_sleep(1, 2)
         driver.execute_script("arguments[0].click();", news_link)
-        random_sleep(3, 5)
+        random_sleep(4, 6)
 
-        # Заголовок (contenteditable div)
+        # Заголовок
         title_input = WebDriverWait(driver, 20).until(
             EC.presence_of_element_located((By.ID, "topic_name"))
         )
         title_input.click()
         driver.execute_script("arguments[0].innerHTML = '';", title_input)
         human_type(title_input, title)
-        random_sleep(2, 4)
+        random_sleep(3, 5)
 
-        # Выбор рубрики
+        # Рубрика
         try:
             rubric = WebDriverWait(driver, 10).until(
                 EC.element_to_be_clickable((By.ID, "rubric_id2"))
@@ -499,7 +485,7 @@ def publish_post(driver, post_folder: Path, email: str, password: str, state: di
             logger.info("   ✅ Выбрана рубрика 'Новости'")
         except Exception as e:
             logger.info(f"   ℹ️ Рубрика не выбрана: {e}")
-        random_sleep(2, 3)
+        random_sleep(2, 4)
 
         # Текст в редакторе
         editor = WebDriverWait(driver, 10).until(
@@ -511,11 +497,10 @@ def publish_post(driver, post_folder: Path, email: str, password: str, state: di
         # Вставляем текст по абзацам
         for paragraph in post_text.split('\n'):
             if paragraph.strip():
-                # Экранируем кавычки для безопасной вставки
                 safe_text = paragraph.strip().replace('"', '&quot;').replace("'", "&#39;")
                 driver.execute_script(f"arguments[0].innerHTML += '<p>{safe_text}</p>';", editor)
-                random_sleep(0.2, 0.5)
-        random_sleep(3, 5)
+                random_sleep(0.3, 0.8)
+        random_sleep(4, 6)
 
         # Загрузка изображения
         if image_path and image_path.exists():
@@ -530,7 +515,7 @@ def publish_post(driver, post_folder: Path, email: str, password: str, state: di
         tags_input.click()
         tags_input.clear()
         human_type(tags_input, generate_tags(post_text))
-        random_sleep(2, 4)
+        random_sleep(3, 5)
 
         # Публикация
         publish_btn = WebDriverWait(driver, 15).until(
@@ -538,29 +523,32 @@ def publish_post(driver, post_folder: Path, email: str, password: str, state: di
         )
         random_mouse_move(driver)
         publish_btn.click()
-        random_sleep(8, 12)
+        random_sleep(10, 15)
 
-        # Проверяем успешность публикации
-        # Ищем сообщение об успехе или возврат на страницу
+        # Проверяем успешность
+        page_source = driver.page_source
         success_messages = [
             "Публикация успешно создана",
             "Новость успешно создана",
             "Статья успешно создана"
         ]
-        page_source = driver.page_source
+        
         if any(msg in page_source for msg in success_messages):
             logger.info("   ✅ Публикация успешно создана!")
+        elif "/pubs/add/" not in driver.current_url:
+            logger.info("   ✅ Похоже, публикация успешно создана (редирект)")
         else:
-            # Проверяем, не вернулись ли на страницу списка
-            if "/pubs/add/" not in driver.current_url:
-                logger.info("   ✅ Похоже, публикация успешно создана (редирект)")
-            else:
-                logger.warning("   ⚠️ Не удалось определить статус публикации, но продолжаем")
+            # Проверяем, нет ли сообщения об ошибке
+            if "Менее минуты" in page_source:
+                logger.warning("   ⚠️ Слишком часто! Ждем 2 минуты...")
+                time.sleep(120)
+                return False
+            logger.warning("   ⚠️ Не удалось определить статус публикации")
 
         mark_as_published(title, state)
         logger.info(f"   🎉 Опубликовано!")
 
-        # Перемещаем папку с постом в архив
+        # Перемещаем в архив
         PUBLISHED_DIR.mkdir(exist_ok=True)
         dest = PUBLISHED_DIR / post_folder.name
         shutil.move(str(post_folder), str(dest))
@@ -572,7 +560,6 @@ def publish_post(driver, post_folder: Path, email: str, password: str, state: di
         logger.error(f"   ❌ Ошибка публикации: {e}")
         try:
             driver.save_screenshot(f"publish_error_{post_folder.name[:20]}.png")
-            logger.info(f"   📸 Скриншот сохранен как publish_error_{post_folder.name[:20]}.png")
         except:
             pass
         return False
@@ -602,7 +589,6 @@ def main():
 
     if not email or not password:
         logger.error("❌ Не найдены SITE_EMAIL / SITE_PASSWORD")
-        logger.info("   Добавьте секреты: SITE_EMAIL и SITE_PASSWORD")
         sys.exit(1)
 
     all_posts = get_all_posts()
@@ -639,12 +625,18 @@ def main():
 
     published_count = 0
     try:
-        for post_folder in new_posts:
+        for idx, post_folder in enumerate(new_posts, 1):
             if not can_publish_today(state):
                 logger.warning(f"⏸️ Достигнут лимит в {MAX_PUBLISH_PER_DAY} публикаций на сегодня.")
                 break
 
-            # Пытаемся опубликовать пост с повторными попытками
+            # Большая пауза между постами (3-6 минут)
+            if idx > 1:
+                pause = random.randint(180, 360)  # 3-6 минут
+                logger.info(f"⏳ Большая пауза {pause} сек перед следующим постом...")
+                time.sleep(pause)
+
+            # Пытаемся опубликовать с повторными попытками
             success = False
             for attempt in range(1, MAX_PUBLISH_RETRIES + 1):
                 if publish_post(driver, post_folder, email, password, state, attempt):
@@ -655,16 +647,14 @@ def main():
                     if attempt < MAX_PUBLISH_RETRIES:
                         logger.info("   🔄 Перезапускаем браузер с новым прокси...")
                         driver.quit()
+                        # Ждем 2-3 минуты перед сменой прокси
+                        time.sleep(random.randint(120, 180))
                         proxy = find_working_proxy(proxies)
                         driver = setup_driver_with_proxy(proxy)
-                        time.sleep(10)
+                        time.sleep(30)
 
             if success:
                 published_count += 1
-                # Пауза между публикациями (2-5 минут)
-                pause = random.randint(120, 300)
-                logger.info(f"⏳ Пауза {pause} сек перед следующим постом...")
-                time.sleep(pause)
             else:
                 logger.error(f"   ❌ Пост не опубликован после {MAX_PUBLISH_RETRIES} попыток, пропускаем")
 
