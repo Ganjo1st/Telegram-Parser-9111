@@ -7,4 +7,3 @@ fake-useragent==1.5.1
 requests==2.33.0
 beautifulsoup4==4.13.4
 lxml==5.4.0
-python-telegram-bot==21.5
