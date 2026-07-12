@@ -11,9 +11,9 @@ import json
 import asyncio
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List
 
 from telethon import TelegramClient
 from telethon.errors import FloodWaitError, SessionPasswordNeededError
@@ -33,7 +33,7 @@ class TelegramParser:
         self.api_id = int(os.getenv('API_ID', 0))
         self.api_hash = os.getenv('API_HASH', '')
         self.channel_id = os.getenv('CHANNEL_ID', '').strip()
-        self.test_mode = os.getenv('TEST_MODE', 'true').lower() == 'true'
+        self.test_mode = os.getenv('TEST_MODE', 'false').lower() == 'true'
         
         if self.channel_id.startswith('@'):
             self.channel_id = self.channel_id[1:]
@@ -44,6 +44,10 @@ class TelegramParser:
         
         self.data_dir = Path('data/posts')
         self.data_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Файл для хранения ID последнего обработанного поста
+        self.state_file = Path('data/last_processed.txt')
+        self.last_processed_id = self._load_last_id()
         
         self.session_dir = Path('sessions')
         self.session_dir.mkdir(parents=True, exist_ok=True)
@@ -59,6 +63,21 @@ class TelegramParser:
         if self.test_mode:
             logger.info("🧪 ТЕСТОВЫЙ РЕЖИМ: будет скачан ТОЛЬКО предпоследний пост")
     
+    def _load_last_id(self) -> int:
+        """Загружает последний обработанный ID"""
+        if self.state_file.exists():
+            try:
+                with open(self.state_file, 'r') as f:
+                    return int(f.read().strip())
+            except:
+                pass
+        return 0
+    
+    def _save_last_id(self, message_id: int):
+        """Сохраняет последний обработанный ID"""
+        with open(self.state_file, 'w') as f:
+            f.write(str(message_id))
+    
     def _sanitize_filename(self, text: str, max_length: int = 100) -> str:
         text = re.sub(r'[<>:"/\\|?*]', '', text)
         text = re.sub(r'[\s\x00-\x1f\x7f-\x9f]+', '_', text)
@@ -68,6 +87,7 @@ class TelegramParser:
         return text if text else datetime.now().strftime('%Y%m%d_%H%M%S')
     
     async def _save_post(self, message):
+        """Сохраняет пост в файловую структуру"""
         date = message.date.strftime('%Y%m%d_%H%M%S')
         text = (message.text or "").strip().replace('\n', ' ')[:100]
         text = self._sanitize_filename(text)
@@ -126,6 +146,7 @@ class TelegramParser:
             logger.info("🚀 Запуск парсера Telegram (пользовательская сессия)")
             logger.info(f"📡 Режим: {'ТЕСТОВЫЙ' if self.test_mode else 'ОБЫЧНЫЙ'}")
             logger.info(f"📡 Канал: {self.channel_id}")
+            logger.info(f"📄 Последний обработанный ID: {self.last_processed_id}")
             logger.info("=" * 50)
             
             await self.client.connect()
@@ -133,7 +154,6 @@ class TelegramParser:
             
             if not await self.client.is_user_authorized():
                 logger.error("❌ Сессия не авторизована!")
-                logger.info("💡 Запустите make_session.py локально")
                 return
             
             me = await self.client.get_me()
@@ -146,33 +166,41 @@ class TelegramParser:
                 logger.error(f"❌ Не удалось получить канал: {e}")
                 return
             
-            messages = []
-            async for msg in self.client.iter_messages(channel, limit=2 if self.test_mode else 5):
-                if msg.text:
-                    messages.append(msg)
+            # Получаем новые сообщения
+            new_messages = []
+            async for msg in self.client.iter_messages(
+                channel, 
+                limit=10,  # Проверяем последние 10 сообщений
+                min_id=self.last_processed_id
+            ):
+                if msg.text and msg.id > self.last_processed_id:
+                    new_messages.append(msg)
             
-            if not messages:
-                logger.info("📭 Нет сообщений")
+            if not new_messages:
+                logger.info("📭 Нет новых сообщений")
                 return
             
-            messages.sort(key=lambda m: m.id)
+            new_messages.sort(key=lambda m: m.id)
+            logger.info(f"📄 Найдено новых сообщений: {len(new_messages)}")
             
-            if self.test_mode and len(messages) >= 2:
-                test_message = messages[-2]
-                logger.info(f"📄 ТЕСТ: предпоследний пост ID {test_message.id}")
-                await self._save_post(test_message)
-                logger.info(f"\n🎉 ТЕСТ ЗАВЕРШЁН: Сохранён 1 пост")
-            elif not self.test_mode:
-                saved_count = 0
-                for msg in messages[:5]:
-                    await self._save_post(msg)
-                    saved_count += 1
-                logger.info(f"\n🎉 Сохранено {saved_count} новых постов")
+            # Сохраняем посты
+            saved_count = 0
+            for msg in new_messages:
+                await self._save_post(msg)
+                saved_count += 1
+                self.last_processed_id = msg.id
             
+            # Сохраняем последний ID
+            if saved_count > 0:
+                self._save_last_id(self.last_processed_id)
+                logger.info(f"💾 Сохранён последний ID: {self.last_processed_id}")
+            
+            logger.info(f"\n🎉 Сохранено {saved_count} новых постов")
             logger.info(f"📁 Посты сохранены в: {self.data_dir}")
             
         except FloodWaitError as e:
             logger.warning(f"⚠️ Flood wait: {e.seconds} секунд")
+            await asyncio.sleep(e.seconds)
         except SessionPasswordNeededError:
             logger.error("❌ Требуется пароль 2FA")
         except Exception as e:
