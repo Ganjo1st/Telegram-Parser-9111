@@ -25,7 +25,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
-from selenium.common.exceptions import TimeoutException, NoSuchElementException, WebDriverException
+from selenium.common.exceptions import TimeoutException, NoSuchElementException, WebDriverException, UnexpectedAlertPresentException
 from webdriver_manager.chrome import ChromeDriverManager
 from fake_useragent import UserAgent
 import httpx
@@ -35,11 +35,10 @@ POSTS_DIR = Path("data/posts")
 PUBLISHED_DIR = Path("published")
 STATE_FILE = Path("publisher_state.json")
 COOKIES_FILE = Path("cookies_9111.ru.txt")
-META_FILE = Path("posts_meta.json")  # Файл с мета-информацией от бота Telegram_news
+META_FILE = Path("posts_meta.json")
 MAX_PUBLISH_PER_DAY = 8
 MAX_PROXY_RETRIES = 3
 
-# Прокси из репозитория Proctor
 PROXY_SOURCES = {
     'russia': 'https://raw.githubusercontent.com/Ganjo1st/Proctor/main/data/proxies_russia.txt',
     'global': 'https://raw.githubusercontent.com/Ganjo1st/Proctor/main/data/proxies_global.txt'
@@ -51,9 +50,7 @@ logger = logging.getLogger(__name__)
 
 # ========== ПРОКСИ-ФУНКЦИИ ==========
 def download_proxies() -> List[str]:
-    """Скачивает прокси из репозитория Proctor"""
     all_proxies = []
-    
     for source_name, url in PROXY_SOURCES.items():
         try:
             logger.info(f"📡 Загрузка {source_name} прокси...")
@@ -66,19 +63,16 @@ def download_proxies() -> List[str]:
                 logger.warning(f"   ⚠️ Ошибка {response.status_code}")
         except Exception as e:
             logger.warning(f"   ⚠️ Ошибка: {e}")
-    
     unique_proxies = list(dict.fromkeys(all_proxies))
     logger.info(f"📊 Всего уникальных прокси: {len(unique_proxies)}")
     return unique_proxies
 
 
 def test_proxy(proxy: str, timeout: int = 10) -> bool:
-    """Проверяет, работает ли прокси для доступа к 9111.ru"""
     try:
         proxy_url = proxy
         if not proxy_url.startswith(('http://', 'socks5://', 'socks4://')):
             proxy_url = f"http://{proxy_url}"
-        
         transport = httpx.HTTPTransport(proxy=proxy_url)
         with httpx.Client(transport=transport, timeout=timeout) as client:
             response = client.get("https://9111.ru", follow_redirects=True)
@@ -91,36 +85,25 @@ def test_proxy(proxy: str, timeout: int = 10) -> bool:
 
 
 def find_working_proxy(proxies_list: List[str]) -> Optional[str]:
-    """Находит первый работающий прокси из списка"""
-    logger.info("🔍 Поиск рабочего прокси (только российские IP)...")
-    
+    logger.info("🔍 Поиск рабочего прокси...")
     if not proxies_list:
         return None
-    
-    # Сначала ищем российские прокси
-    russian_proxies = [p for p in proxies_list if any(x in p for x in ['.ru', '178.', '176.', '188.', '193.', '194.', '195.', '212.', '213.', '217.', '5.'])]
-    
+    russian_proxies = [p for p in proxies_list if any(x in p for x in ['.ru', '178.', '176.', '188.', '193.', '194.', '195.', '212.', '213.', '217.', '5.', '89.', '109.', '176.'])]
+    proxies_to_check = russian_proxies if russian_proxies else proxies_list
     if russian_proxies:
-        proxies_to_check = russian_proxies
         logger.info(f"   Найдено {len(russian_proxies)} российских прокси")
-    else:
-        proxies_to_check = proxies_list
-    
     random.shuffle(proxies_to_check)
-    
     for proxy in proxies_to_check[:20]:
         logger.info(f"   Проверяем: {proxy}")
         if test_proxy(proxy):
             logger.info(f"   ✅ Найден рабочий прокси: {proxy}")
             return proxy
         logger.info(f"   ❌ Не работает")
-    
     logger.warning("⚠️ Нет рабочих прокси")
     return None
 
 
 def parse_cookies_netscape(cookies_file: Path) -> List[dict]:
-    """Парсит файл кук в формате Netscape"""
     cookies = []
     try:
         with open(cookies_file, 'r') as f:
@@ -128,13 +111,11 @@ def parse_cookies_netscape(cookies_file: Path) -> List[dict]:
                 line = line.strip()
                 if not line or line.startswith('#'):
                     continue
-                
                 parts = line.split('\t')
                 if len(parts) >= 7:
                     import urllib.parse
                     value = urllib.parse.unquote(parts[6])
-                    
-                    cookie = {
+                    cookies.append({
                         'domain': parts[0],
                         'httpOnly': parts[1] == 'TRUE',
                         'path': parts[2],
@@ -142,8 +123,7 @@ def parse_cookies_netscape(cookies_file: Path) -> List[dict]:
                         'expiry': int(parts[4]) if parts[4] != '0' else None,
                         'name': parts[5],
                         'value': value
-                    }
-                    cookies.append(cookie)
+                    })
         logger.info(f"🍪 Загружено {len(cookies)} кук из {cookies_file}")
         return cookies
     except Exception as e:
@@ -152,10 +132,7 @@ def parse_cookies_netscape(cookies_file: Path) -> List[dict]:
 
 
 def setup_driver_with_proxy(proxy: Optional[str] = None) -> webdriver.Chrome:
-    """Настройка ChromeDriver с поддержкой прокси"""
     options = Options()
-    
-    # === МАСКИРОВКА АВТОМАТИЗАЦИИ ===
     options.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
     options.add_experimental_option('useAutomationExtension', False)
     options.add_argument("--disable-blink-features=AutomationControlled")
@@ -169,51 +146,38 @@ def setup_driver_with_proxy(proxy: Optional[str] = None) -> webdriver.Chrome:
     options.add_argument("--headless=new")
     options.add_argument("--disable-gpu")
     
-    # Случайный User-Agent
     ua = UserAgent()
     options.add_argument(f"--user-agent={ua.random}")
-    
-    # Случайный размер окна
     sizes = [(1920, 1080), (1366, 768), (1536, 864), (1440, 900), (1280, 720)]
     width, height = random.choice(sizes)
     options.add_argument(f"--window-size={width},{height}")
     
-    # === ПРОКСИ ===
     if proxy:
         proxy_url = proxy
         if not proxy_url.startswith(('http://', 'socks5://', 'socks4://')):
             proxy_url = f"http://{proxy_url}"
-        
         options.add_argument(f'--proxy-server={proxy_url}')
         logger.info(f"🔌 Используем прокси: {proxy}")
     
-    # === ЗАПУСК ===
     service = Service(ChromeDriverManager().install())
     driver = webdriver.Chrome(service=service, options=options)
-    
-    # Убираем следы автоматизации
     driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
     driver.execute_script("Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3,4,5]})")
     driver.execute_script("Object.defineProperty(navigator, 'languages', {get: () => ['ru-RU', 'ru']})")
-    
     return driver
 
 
 def login_with_cookies(driver, cookies_file: Path) -> bool:
-    """Авторизация через куки - сразу переходим на страницу публикации"""
     logger.info("   🍪 Авторизация через куки...")
     try:
         driver.get("https://9111.ru/pubs/add/title/")
         random_sleep(3, 5)
-        
         if len(driver.find_elements(By.NAME, "email")) > 0:
             logger.warning("   ⚠️ Страница публикации показывает форму входа")
             return False
-        
         if len(driver.find_elements(By.ID, "topic_name")) > 0:
             logger.info("   ✅ Авторизация подтверждена")
             return True
-        
         return False
     except Exception as e:
         logger.error(f"   ❌ Ошибка установки кук: {e}")
@@ -222,7 +186,6 @@ def login_with_cookies(driver, cookies_file: Path) -> bool:
 
 # ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
 def human_type(element, text, min_delay=0.07, max_delay=0.2):
-    """Печатает текст как человек"""
     for char in text:
         element.send_keys(char)
         if random.random() < 0.1:
@@ -232,12 +195,10 @@ def human_type(element, text, min_delay=0.07, max_delay=0.2):
 
 
 def random_sleep(min_sec=2, max_sec=5):
-    """Случайная пауза"""
     time.sleep(random.uniform(min_sec, max_sec))
 
 
 def random_mouse_move(driver):
-    """Имитирует движение мыши"""
     try:
         action = ActionChains(driver)
         action.move_by_offset(random.randint(-100, 100), random.randint(-80, 80))
@@ -248,7 +209,6 @@ def random_mouse_move(driver):
 
 
 def safe_click(driver, element):
-    """Безопасный клик через JavaScript (обход перекрытий)"""
     try:
         driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", element)
         random_sleep(0.3, 0.8)
@@ -259,8 +219,20 @@ def safe_click(driver, element):
         return False
 
 
+def handle_alert(driver):
+    """Обрабатывает случайные алерты"""
+    try:
+        alert = driver.switch_to.alert
+        text = alert.text
+        logger.warning(f"   ⚠️ Обнаружен алерт: {text}")
+        alert.accept()
+        random_sleep(1, 2)
+        return True
+    except:
+        return False
+
+
 def generate_tags(text: str) -> str:
-    """Генерирует теги на основе текста"""
     tags = ["новости", "россия", "мир"]
     text_lower = text.lower()
     if "иран" in text_lower: tags.append("иран")
@@ -275,8 +247,6 @@ def generate_tags(text: str) -> str:
 
 
 def get_source_from_meta(post_folder: Path) -> Optional[str]:
-    """Получает ссылку на источник из meta.json или posts_meta.json"""
-    # Сначала проверяем meta.json в папке поста
     meta_file = post_folder / "meta.json"
     if meta_file.exists():
         try:
@@ -287,46 +257,36 @@ def get_source_from_meta(post_folder: Path) -> Optional[str]:
         except:
             pass
     
-    # Затем проверяем глобальный posts_meta.json
     if META_FILE.exists():
         try:
             with open(META_FILE, 'r', encoding='utf-8') as f:
                 meta_data = json.load(f)
-            
             folder_name = post_folder.name
-            # Пытаемся найти по точному совпадению
             if folder_name in meta_data.get("posts", {}):
                 source_url = meta_data["posts"][folder_name].get("url")
                 if source_url:
-                    logger.info(f"   🔗 Найден источник из meta-файла: {source_url}")
+                    logger.info(f"   🔗 Найден источник из meta-файла")
                     return source_url
-            
-            # Пытаемся найти по частичному совпадению (по дате)
-            folder_date = folder_name[:15]  # YYYYMMDD_HHMMSS
+            folder_date = folder_name[:15]
             for key, value in meta_data.get("posts", {}).items():
                 if folder_date in key or key.startswith(folder_date):
                     source_url = value.get("url")
                     if source_url:
-                        logger.info(f"   🔗 Найден источник по дате: {source_url}")
+                        logger.info(f"   🔗 Найден источник по дате")
                         return source_url
         except Exception as e:
             logger.warning(f"   ⚠️ Ошибка чтения meta-файла: {e}")
-    
     return None
 
 
 def add_source_to_content(content: str, source_url: Optional[str]) -> str:
-    """Добавляет ссылку на источник в конец текста"""
     if not source_url:
         return content
-    
     source_text = f"\n\n📌 Источник: {source_url}"
-    
     if len(content) + len(source_text) > 4000:
         max_content_len = 4000 - len(source_text) - 100
         if len(content) > max_content_len:
             content = content[:max_content_len] + "..."
-    
     return content + source_text
 
 
@@ -377,20 +337,15 @@ def mark_as_published(title: str, state: dict):
 
 
 def parse_post_file(post_folder: Path) -> Tuple[Optional[str], Optional[str], Optional[Path]]:
-    """Читает файл поста и извлекает заголовок, текст и изображение"""
     text_file = post_folder / "text.txt"
     if not text_file.exists():
         return None, None, None
-
     with open(text_file, 'r', encoding='utf-8') as f:
         content = f.read()
-
     lines = [line.strip() for line in content.split('\n') if line.strip()]
     if not lines:
         return None, None, None
-
     title = lines[0]
-    
     import re
     emoji_pattern = re.compile("["
         u"\U0001F600-\U0001F64F"
@@ -399,14 +354,11 @@ def parse_post_file(post_folder: Path) -> Tuple[Optional[str], Optional[str], Op
         u"\U0001F1E0-\U0001F1FF"
         "]+", flags=re.UNICODE)
     title = emoji_pattern.sub(r'', title).strip()
-    
     if len(title) > 150:
         title = title[:147] + "..."
-
     post_text = "\n".join(lines[1:]) if len(lines) > 1 else ""
     images = list(post_folder.glob("image.*"))
     image_path = images[0] if images else None
-
     return title, post_text, image_path
 
 
@@ -423,10 +375,9 @@ def upload_image(driver, image_path: Path) -> bool:
         file_input = WebDriverWait(driver, 10).until(
             EC.presence_of_element_located((By.ID, "editor_file_upload"))
         )
-        
         file_input.send_keys(str(image_path.absolute()))
         logger.info(f"   ✅ Изображение загружено: {image_path.name}")
-        random_sleep(2, 4)
+        random_sleep(3, 5)
         return True
         
     except TimeoutException:
@@ -434,7 +385,7 @@ def upload_image(driver, image_path: Path) -> bool:
             file_input = driver.find_element(By.CSS_SELECTOR, "input[type='file']")
             file_input.send_keys(str(image_path.absolute()))
             logger.info(f"   ✅ Изображение загружено (альтернативный способ)")
-            random_sleep(2, 4)
+            random_sleep(3, 5)
             return True
         except Exception as e2:
             logger.warning(f"   ⚠️ Не удалось загрузить фото: {e2}")
@@ -445,7 +396,6 @@ def upload_image(driver, image_path: Path) -> bool:
 
 
 def publish_post(driver, post_folder: Path, state: dict) -> bool:
-    """Публикует один пост (уже на странице /pubs/add/title/)"""
     logger.info(f"\n📂 Пост: {post_folder.name}")
 
     title, post_text, image_path = parse_post_file(post_folder)
@@ -461,7 +411,6 @@ def publish_post(driver, post_folder: Path, state: dict) -> bool:
         logger.warning(f"   ⏸️ Достигнут лимит ({MAX_PUBLISH_PER_DAY}/день)")
         return False
 
-    # Добавляем источник из meta-файла
     source_url = get_source_from_meta(post_folder)
     post_text = add_source_to_content(post_text, source_url)
     
@@ -471,12 +420,15 @@ def publish_post(driver, post_folder: Path, state: dict) -> bool:
         logger.info(f"   ℹ️ Источник для поста не найден")
 
     logger.info(f"   📝 Публикуем: {title[:50]}...")
-    logger.info(f"   📄 Длина текста с источником: {len(post_text)} символов")
+    logger.info(f"   📄 Длина текста: {len(post_text)} символов")
 
     try:
         if "/pubs/add/title/" not in driver.current_url:
             driver.get("https://9111.ru/pubs/add/title/")
             random_sleep(4, 6)
+
+        # Проверяем алерты
+        handle_alert(driver)
 
         if len(driver.find_elements(By.NAME, "email")) > 0:
             logger.error("   ❌ Мы на странице входа")
@@ -504,14 +456,13 @@ def publish_post(driver, post_folder: Path, state: dict) -> bool:
             pass
         random_sleep(2, 3)
 
-        # Текст - используем JS для вставки
+        # Текст
         editor = WebDriverWait(driver, 10).until(
             EC.presence_of_element_located((By.ID, "lite_editor_container"))
         )
         safe_click(driver, editor)
         driver.execute_script("arguments[0].innerHTML = '';", editor)
         
-        # Вставляем текст по абзацам через JS
         for p in post_text.split('\n'):
             if p.strip():
                 driver.execute_script(f"arguments[0].innerHTML += '<p>{p.strip()}</p>';", editor)
@@ -538,6 +489,9 @@ def publish_post(driver, post_folder: Path, state: dict) -> bool:
         except:
             logger.warning("   ⚠️ Не удалось ввести теги, продолжаем...")
 
+        # Проверяем алерты перед публикацией
+        handle_alert(driver)
+
         # Публикация
         publish_btn = WebDriverWait(driver, 15).until(
             EC.element_to_be_clickable((By.ID, "button_create_pubs"))
@@ -545,6 +499,9 @@ def publish_post(driver, post_folder: Path, state: dict) -> bool:
         random_mouse_move(driver)
         safe_click(driver, publish_btn)
         random_sleep(8, 12)
+
+        # Проверяем алерты после публикации
+        handle_alert(driver)
 
         mark_as_published(title, state)
         logger.info(f"   🎉 Опубликовано!")
@@ -556,6 +513,10 @@ def publish_post(driver, post_folder: Path, state: dict) -> bool:
 
         return True
 
+    except UnexpectedAlertPresentException as e:
+        logger.warning(f"   ⚠️ Алерт при публикации, пробуем продолжить")
+        handle_alert(driver)
+        return False
     except Exception as e:
         logger.error(f"   ❌ Ошибка: {e}")
         try:
@@ -570,28 +531,24 @@ def get_all_posts() -> List[Path]:
     if not POSTS_DIR.exists():
         logger.warning(f"⚠️ Папка {POSTS_DIR} не существует")
         return []
-    
     posts = [p for p in POSTS_DIR.iterdir() if p.is_dir()]
     logger.info(f"📊 Найдено папок-постов: {len(posts)}")
-    
     if posts:
         logger.info(f"   Примеры: {', '.join([p.name[:50] for p in posts[:3]])}")
-    
     return posts
 
 
 def main():
-    # Проверка тестового режима
-    test_mode = os.getenv('TEST_PUBLISHER', 'true').lower() == 'true'
+    test_mode = os.getenv('TEST_PUBLISHER', 'false').lower() == 'true'
     
     logger.info("=" * 60)
     if test_mode:
         logger.info("🧪 ТЕСТОВЫЙ РЕЖИМ: Будет опубликован ТОЛЬКО ПРЕДПОСЛЕДНИЙ пост")
     else:
-        logger.info("🚀 ЗАПУСК ПУБЛИКАТОРА (авторизация по кукам)")
+        logger.info("🚀 ЗАПУСК ПУБЛИКАТОРА")
     logger.info("=" * 60)
 
-    # Загружаем свежий posts_meta.json из репозитория Telegram_news
+    # Загружаем свежий posts_meta.json
     try:
         response = httpx.get(
             'https://raw.githubusercontent.com/Ganjo1st/Telegram_news/main/posts_meta.json',
@@ -618,11 +575,9 @@ def main():
     state = load_state()
     state = reset_daily_counter(state)
 
-    # Если тестовый режим - берём предпоследний пост
     if test_mode and len(all_posts) >= 2:
-        # Берём предпоследний пост (индекс -2)
         test_posts = [all_posts[-2]]
-        logger.info(f"🧪 ТЕСТОВЫЙ РЕЖИМ: выбран ПРЕДПОСЛЕДНИЙ пост: {test_posts[0].name}")
+        logger.info(f"🧪 ТЕСТ: выбран пост: {test_posts[0].name}")
     else:
         test_posts = all_posts
 
@@ -704,7 +659,7 @@ def main():
                 proxy_fail_count = 0
                 if i < len(new_posts):
                     pause = random.randint(60, 120)
-                    logger.info(f"⏳ Пауза {pause} сек перед следующим постом...")
+                    logger.info(f"⏳ Пауза {pause} сек...")
                     time.sleep(pause)
             else:
                 proxy_fail_count += 1
@@ -713,10 +668,8 @@ def main():
                 if proxy_fail_count >= MAX_PROXY_RETRIES:
                     logger.info("   🔄 Смена прокси...")
                     driver.quit()
-                    
                     available_proxies = [p for p in all_proxies if p != current_proxy]
                     current_proxy = find_working_proxy(available_proxies)
-                    
                     if current_proxy:
                         driver = setup_driver_with_proxy(current_proxy)
                         driver.get("https://9111.ru/pubs/add/title/")
