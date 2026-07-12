@@ -2,24 +2,17 @@ name: Publish to 9111.ru
 
 on:
   workflow_dispatch:
-    inputs:
-      test_mode:
-        description: 'Тестовый режим (только предпоследний пост)'
-        required: false
-        default: false
-        type: boolean
-  workflow_run:
-    workflows: ["Parse Telegram Channel"]
-    types:
-      - completed
+  schedule:
+    - cron: '*/30 * * * *'
 
 jobs:
   publish:
     runs-on: ubuntu-24.04
-    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Важно для git pull
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -48,7 +41,6 @@ jobs:
         env:
           SITE_EMAIL: ${{ secrets.SITE_EMAIL }}
           SITE_PASSWORD: ${{ secrets.SITE_PASSWORD }}
-          TEST_PUBLISHER: ${{ github.event.inputs.test_mode == true && 'true' || 'false' }}
         run: python publisher.py
 
       - name: Commit and push published state
@@ -56,20 +48,25 @@ jobs:
           git config --local user.name "github-actions[bot]"
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           
-          # Проверяем, есть ли изменения
-          git add data/posts/ published/ publisher_state.json || true
-          git diff --quiet && git diff --staged --quiet || (
-            git commit -m "📤 Update published posts $(date +'%Y-%m-%d %H:%M:%S')" && 
-            git push
-          ) || true
+          # Добавляем только файлы состояния
+          git add publisher_state.json || true
+          git add published/ || true
+          
+          # Проверяем изменения
+          if git diff --quiet && git diff --staged --quiet; then
+            echo "Нет изменений для коммита"
+          else
+            git commit -m "📤 Update published state $(date +'%Y-%m-%d %H:%M:%S')" || true
+            # Пробуем pull перед push
+            git pull --rebase origin main || true
+            git push origin main || true
+          fi
 
-      - name: Upload debug screenshots
+      - name: Upload screenshots on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: publish-debug
+          name: debug-screenshots
           path: |
             *.png
-            publish_error.png
-            auth_error.png
           if-no-files-found: ignore
