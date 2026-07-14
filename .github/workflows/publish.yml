@@ -40,7 +40,7 @@ jobs:
           git clone https://github.com/bol-van/zapret.git
           cd zapret
           
-          # Используем install.sh вместо make install
+          # Запускаем install.sh
           sudo ./install.sh
           
           # Проверяем установку
@@ -56,7 +56,8 @@ jobs:
           echo "WHITELIST_RULES=hostlist" | sudo tee -a /etc/zapret/config
           
           # Запускаем zapret
-          sudo /opt/zapret/zapret start
+          sudo systemctl enable zapret
+          sudo systemctl start zapret
 
       - name: Run publisher
         env:
