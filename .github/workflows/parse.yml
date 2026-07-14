@@ -79,6 +79,34 @@ jobs:
           sudo apt-get install -y google-chrome-stable
           google-chrome --version
 
+      - name: Install zapret
+        run: |
+          # Устанавливаем зависимости
+          sudo apt-get install -y curl wget net-tools iproute2 iptables
+          
+          # Скачиваем zapret
+          cd /tmp
+          git clone https://github.com/bol-van/zapret.git
+          cd zapret
+          
+          # Устанавливаем
+          sudo make install
+          
+          # Проверяем установку
+          /opt/zapret/zapret --version || echo "zapret installed"
+          
+          # Копируем конфиг
+          sudo cp /tmp/zapret/config.default /etc/zapret/config
+          
+          # Настраиваем для обхода блокировок
+          echo "ENABLED=1" | sudo tee -a /etc/zapret/config
+          echo "MODE=hostip" | sudo tee -a /etc/zapret/config
+          echo "DPI_MODE=whitelist" | sudo tee -a /etc/zapret/config
+          echo "WHITELIST_RULES=hostlist" | sudo tee -a /etc/zapret/config
+          
+          # Запускаем zapret
+          sudo /opt/zapret/zapret start
+
       - name: Check if there are new posts
         id: check_posts
         run: |
@@ -95,7 +123,11 @@ jobs:
         env:
           SITE_EMAIL: ${{ secrets.SITE_EMAIL }}
           SITE_PASSWORD: ${{ secrets.SITE_PASSWORD }}
-        run: python publisher.py
+          USE_ZAPRET: 'true'
+        run: |
+          # Проверяем статус zapret
+          sudo /opt/zapret/zapret status || echo "zapret не запущен"
+          python publisher.py
 
       - name: Commit and push published state
         if: steps.check_posts.outputs.has_posts == 'true'
