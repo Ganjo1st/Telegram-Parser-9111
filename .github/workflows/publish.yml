@@ -30,35 +30,6 @@ jobs:
           sudo apt-get install -y google-chrome-stable
           google-chrome --version
 
-      - name: Install zapret
-        run: |
-          # Устанавливаем зависимости
-          sudo apt-get install -y curl wget net-tools iproute2 iptables
-          
-          # Скачиваем zapret
-          cd /tmp
-          git clone https://github.com/bol-van/zapret.git
-          cd zapret
-          
-          # Запускаем install.sh
-          sudo ./install.sh
-          
-          # Проверяем установку
-          /opt/zapret/zapret --version || echo "zapret installed"
-          
-          # Копируем конфиг
-          sudo cp config.default /etc/zapret/config
-          
-          # Настраиваем для обхода блокировок
-          echo "ENABLED=1" | sudo tee -a /etc/zapret/config
-          echo "MODE=hostip" | sudo tee -a /etc/zapret/config
-          echo "DPI_MODE=whitelist" | sudo tee -a /etc/zapret/config
-          echo "WHITELIST_RULES=hostlist" | sudo tee -a /etc/zapret/config
-          
-          # Запускаем zapret
-          sudo systemctl enable zapret
-          sudo systemctl start zapret
-
       - name: Run publisher
         env:
           SITE_EMAIL: ${{ secrets.SITE_EMAIL }}
