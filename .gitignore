@@ -19,7 +19,6 @@ cookies_9111.ru.txt
 # *.session-journal
 
 # Data (кроме .gitkeep)
-data/posts/
 published/
 publisher_state.json
 *.log
