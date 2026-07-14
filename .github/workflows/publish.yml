@@ -1,13 +1,9 @@
 name: Publish to 9111.ru
 
 on:
-  workflow_dispatch:  # Ручной запуск
+  workflow_dispatch:
   schedule:
-    - cron: '*/30 * * * *'  # Каждые 30 минут
-  push:
-    branches: [ main ]
-    paths:
-      - 'data/posts/**'  # Запускается когда появляются новые посты
+    - cron: '*/30 * * * *'
 
 jobs:
   publish:
@@ -34,41 +30,32 @@ jobs:
           sudo apt-get install -y google-chrome-stable
           google-chrome --version
 
-      - name: Check if there are new posts
-        id: check_posts
+      - name: Install and configure zapret
         run: |
-          if [ -n "$(ls -A data/posts/ 2>/dev/null)" ]; then
-            echo "has_posts=true" >> $GITHUB_OUTPUT
-            echo "📦 Найдены посты для публикации"
-          else
-            echo "has_posts=false" >> $GITHUB_OUTPUT
-            echo "📭 Нет постов для публикации"
-          fi
+          # Скачиваем zapret
+          cd /tmp
+          git clone https://github.com/bol-van/zapret.git
+          cd zapret
+          sudo make install
+          
+          # Настраиваем для работы с 9111.ru
+          sudo systemctl enable zapret
+          sudo systemctl start zapret
 
       - name: Run publisher
-        if: steps.check_posts.outputs.has_posts == 'true'
         env:
           SITE_EMAIL: ${{ secrets.SITE_EMAIL }}
           SITE_PASSWORD: ${{ secrets.SITE_PASSWORD }}
         run: python publisher.py
 
       - name: Commit and push published state
-        if: steps.check_posts.outputs.has_posts == 'true'
         run: |
           git config --local user.name "github-actions[bot]"
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
-          
           git add publisher_state.json || true
           git add published/ || true
-          git add data/posts/ || true
-          
-          if git diff --quiet && git diff --staged --quiet; then
-            echo "Нет изменений для коммита"
-          else
-            git commit -m "📤 Update published state $(date +'%Y-%m-%d %H:%M:%S')" || true
-            git pull --rebase origin main || true
-            git push origin main || true
-          fi
+          git diff --quiet && git diff --staged --quiet || git commit -m "📤 Update published state $(date +'%Y-%m-%d %H:%M:%S')" || true
+          git push || true
 
       - name: Upload screenshots on failure
         if: failure()
