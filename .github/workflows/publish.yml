@@ -12,7 +12,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 0  # Важно для git pull
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -30,6 +30,13 @@ jobs:
           sudo apt-get install -y google-chrome-stable
           google-chrome --version
 
+      - name: Show posts folder
+        run: |
+          echo "=== Содержимое data/posts ==="
+          ls -la data/posts/ || echo "Папка пуста или не существует"
+          echo "=== Количество папок ==="
+          find data/posts -type d | wc -l || echo "0"
+
       - name: Run publisher
         env:
           SITE_EMAIL: ${{ secrets.SITE_EMAIL }}
@@ -40,10 +47,20 @@ jobs:
         run: |
           git config --local user.name "github-actions[bot]"
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # Добавляем только файлы состояния
           git add publisher_state.json || true
           git add published/ || true
-          git diff --quiet && git diff --staged --quiet || git commit -m "📤 Update published state $(date +'%Y-%m-%d %H:%M:%S')" || true
-          git push || true
+          
+          # Проверяем изменения
+          if git diff --quiet && git diff --staged --quiet; then
+            echo "Нет изменений для коммита"
+          else
+            git commit -m "📤 Update published state $(date +'%Y-%m-%d %H:%M:%S')" || true
+            # Пробуем pull перед push
+            git pull --rebase origin main || true
+            git push origin main || true
+          fi
 
       - name: Upload screenshots on failure
         if: failure()
