@@ -7,7 +7,7 @@ on:
   push:
     branches: [ main ]
     paths:
-      - 'data/posts/**'  # Запускается только если есть новые посты
+      - 'data/posts/**'  # Запускается когда появляются новые посты
 
 jobs:
   publish:
