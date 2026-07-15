@@ -279,65 +279,21 @@ def parse_post_file(post_folder: Path) -> Tuple[Optional[str], Optional[str], Op
 
     return title, post_text, image_path
 
-# ========== ФУНКЦИЯ ЗАГРУЗКИ КУК (РАБОЧАЯ) ==========
-def load_cookies(driver, cookie_file="cookies_9111.ru.txt") -> bool:
-    """Загружает куки из файла в формате Netscape"""
-    try:
-        if not os.path.exists(cookie_file):
-            logger.warning(f"   ⚠️ Файл {cookie_file} не найден")
-            return False
-        
-        with open(cookie_file, 'r', encoding='utf-8') as f:
-            lines = f.readlines()
-        
-        loaded = 0
-        for line in lines:
-            line = line.strip()
-            if not line or line.startswith('#'):
-                continue
-            
-            parts = line.split('\t')
-            if len(parts) >= 7:
-                try:
-                    domain = parts[0]
-                    flag = parts[1]
-                    path = parts[2]
-                    secure = parts[3] == 'TRUE'
-                    expiration = int(parts[4]) if parts[4].isdigit() else None
-                    name = parts[5]
-                    value = parts[6]
-                    
-                    cookie = {
-                        'name': name,
-                        'value': value,
-                        'domain': domain.lstrip('.'),
-                        'path': path,
-                        'secure': secure,
-                        'httpOnly': False
-                    }
-                    
-                    if expiration and expiration > 0:
-                        cookie['expiry'] = expiration
-                    
-                    driver.add_cookie(cookie)
-                    loaded += 1
-                except Exception as e:
-                    logger.debug(f"   ⚠️ Ошибка куки {name}: {e}")
-        
-        logger.info(f"   🍪 Загружено {loaded} кук из {cookie_file}")
-        return loaded > 0
-    except Exception as e:
-        logger.warning(f"   ⚠️ Ошибка загрузки кук: {e}")
-        return False
-
-# ========== АВТОРИЗАЦИЯ (РАБОЧАЯ) ==========
+# ========== РАБОЧАЯ АВТОРИЗАЦИЯ (БЕЗ КУК) ==========
 def login_to_9111(driver, email: str, password: str) -> bool:
     """Авторизация на сайте 9111.ru через форму"""
-    logger.info("   🔑 Авторизация...")
+    logger.info("   🔑 Авторизация через логин/пароль...")
     try:
+        # Открываем главную страницу
         driver.get("https://9111.ru/")
         random_sleep(3, 5)
+        
+        # Ждем загрузки страницы
+        WebDriverWait(driver, 15).until(
+            EC.presence_of_element_located((By.TAG_NAME, "body"))
+        )
 
+        # Находим и кликаем кнопку входа
         login_btn = WebDriverWait(driver, 15).until(
             EC.element_to_be_clickable((By.CLASS_NAME, "login-button"))
         )
@@ -345,6 +301,7 @@ def login_to_9111(driver, email: str, password: str) -> bool:
         login_btn.click()
         random_sleep(2, 4)
 
+        # Поле email
         email_input = WebDriverWait(driver, 10).until(
             EC.presence_of_element_located((By.NAME, "email"))
         )
@@ -353,6 +310,7 @@ def login_to_9111(driver, email: str, password: str) -> bool:
         human_type(email_input, email)
         random_sleep(1, 2)
 
+        # Кнопка "Войти по паролю"
         password_btn = WebDriverWait(driver, 10).until(
             EC.element_to_be_clickable((By.XPATH, "//span[contains(text(), 'Войти по паролю')]"))
         )
@@ -360,6 +318,7 @@ def login_to_9111(driver, email: str, password: str) -> bool:
         password_btn.click()
         random_sleep(2, 3)
 
+        # Поле пароля
         password_input = WebDriverWait(driver, 10).until(
             EC.presence_of_element_located((By.NAME, "password"))
         )
@@ -368,6 +327,7 @@ def login_to_9111(driver, email: str, password: str) -> bool:
         human_type(password_input, password)
         random_sleep(1, 2)
 
+        # Кнопка отправки
         submit_btn = WebDriverWait(driver, 10).until(
             EC.element_to_be_clickable((By.XPATH, "//input[@type='submit' and @value='Войти']"))
         )
@@ -375,23 +335,19 @@ def login_to_9111(driver, email: str, password: str) -> bool:
         submit_btn.click()
         random_sleep(5, 7)
 
+        # Проверяем успешность входа
         success = len(driver.find_elements(By.CLASS_NAME, "userMenuOpen")) > 0
+        
         if success:
-            logger.info("   ✅ Авторизация успешна")
-            # Сохраняем свежие куки для будущих сессий
-            try:
-                cookies = driver.get_cookies()
-                with open("cookies_9111.ru.txt", "w", encoding='utf-8') as f:
-                    for cookie in cookies:
-                        # Сохраняем в формате Netscape
-                        expiry = cookie.get('expiry', 0)
-                        secure = 'TRUE' if cookie.get('secure', False) else 'FALSE'
-                        f.write(f"{cookie['domain']}\t{secure}\t{cookie['path']}\t{secure}\t{expiry}\t{cookie['name']}\t{cookie['value']}\n")
-                logger.info("   💾 Куки сохранены в файл")
-            except:
-                pass
+            logger.info("   ✅ Авторизация успешна!")
         else:
             logger.error("   ❌ Авторизация не удалась")
+            # Сохраняем скриншот для диагностики
+            try:
+                driver.save_screenshot("auth_error.png")
+                logger.info("   📸 Скриншот сохранен как auth_error.png")
+            except:
+                pass
         
         return success
 
@@ -443,20 +399,20 @@ def publish_post(driver, post_folder: Path, email: str, password: str, state: di
     logger.info(f"   📝 Публикуем: {title[:50]}...")
 
     try:
+        # Переходим на страницу добавления поста
         driver.get("https://9111.ru/pubs/add/")
         random_sleep(4, 6)
-
-        # === ЗАГРУЖАЕМ КУКИ ===
-        load_cookies(driver)
 
         # Проверяем авторизацию
         if len(driver.find_elements(By.CLASS_NAME, "userMenuOpen")) == 0:
             if not login_to_9111(driver, email, password):
                 logger.error("   ❌ Не удалось авторизоваться")
                 return False
+            # После успешной авторизации обновляем страницу
             driver.get("https://9111.ru/pubs/add/")
             random_sleep(3, 5)
 
+        # Выбираем "Новость, статья"
         news_link = WebDriverWait(driver, 15).until(
             EC.element_to_be_clickable((By.XPATH, "//a[contains(text(), 'Новость, статья')]"))
         )
@@ -465,6 +421,7 @@ def publish_post(driver, post_folder: Path, email: str, password: str, state: di
         driver.execute_script("arguments[0].click();", news_link)
         random_sleep(3, 5)
 
+        # Заголовок
         title_input = WebDriverWait(driver, 20).until(
             EC.presence_of_element_located((By.ID, "topic_name"))
         )
@@ -473,6 +430,7 @@ def publish_post(driver, post_folder: Path, email: str, password: str, state: di
         human_type(title_input, title)
         random_sleep(2, 4)
 
+        # Рубрика
         try:
             rubric = WebDriverWait(driver, 10).until(
                 EC.element_to_be_clickable((By.ID, "rubric_id2"))
@@ -485,6 +443,7 @@ def publish_post(driver, post_folder: Path, email: str, password: str, state: di
             pass
         random_sleep(2, 3)
 
+        # Текст
         editor = WebDriverWait(driver, 10).until(
             EC.presence_of_element_located((By.ID, "lite_editor_container"))
         )
@@ -498,9 +457,11 @@ def publish_post(driver, post_folder: Path, email: str, password: str, state: di
 
         random_sleep(3, 5)
 
+        # Изображение
         if image_path and image_path.exists():
             upload_image(driver, image_path)
 
+        # Теги
         tags_input = WebDriverWait(driver, 10).until(
             EC.presence_of_element_located((By.ID, "tag_list_input"))
         )
@@ -509,6 +470,7 @@ def publish_post(driver, post_folder: Path, email: str, password: str, state: di
         human_type(tags_input, generate_tags(post_text))
         random_sleep(2, 4)
 
+        # Публикация
         publish_btn = WebDriverWait(driver, 15).until(
             EC.element_to_be_clickable((By.ID, "button_create_pubs"))
         )
@@ -516,9 +478,11 @@ def publish_post(driver, post_folder: Path, email: str, password: str, state: di
         publish_btn.click()
         random_sleep(8, 12)
 
+        # Отмечаем как опубликованное
         mark_as_published(title, state)
         logger.info(f"   🎉 Опубликовано!")
 
+        # Перемещаем в архив
         PUBLISHED_DIR.mkdir(exist_ok=True)
         dest = PUBLISHED_DIR / post_folder.name
         shutil.move(str(post_folder), str(dest))
