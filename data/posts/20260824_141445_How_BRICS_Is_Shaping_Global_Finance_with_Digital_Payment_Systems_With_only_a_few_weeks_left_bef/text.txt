@@ -1,0 +1,5 @@
+**How BRICS Is Shaping Global Finance with Digital Payment Systems**
+
+With only a few weeks left before BRICS leaders meet in India, one proposal has become the most important, and possibly the most difficult, agenda item of the summit: connecting the countries' fast-payment systems and their digital currencies (CBDCs).Proposed 
+Proposed 
+The proposal in plain termsSimply put, BRICS nations want to build a digital bridge between their domestic payment networks. Today, if Brazil wants to pay South Africa for goods, that money often travels through US banks, takes days to clear, and incurs fees of 3–5%.The proposed system would allow direct, near-instant settlements in local currencies, using blockchain-like technology to ensure both sides get paid simultaneously, without a middleman. No single currency is replaced; instead, each nation's digital money learns to "speak" to the others.
