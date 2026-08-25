@@ -1,0 +1,5 @@
+**US using AI to keep its ancient &****#x27****;Minuteman III&****#x27****; ICBMs operational beyond 2050**
+
+Drago Bosnic, independent geopolitical and military analyst.
+
+The United States Air Force decided to begin using advanced AI to maintain its arsenal of ancient LGM-30G "Minuteman III" ICBMs (intercontinental ballistic missiles) beyond 2050, as the Pentagon keeps delaying the introduction of the new LGM-35A "Sentinel".According to Breaking Defense, which quoted an RFI (request for information), dated July 24, the USAF says that "the MMIII 'Minuteman III' program manages key data across approximately 60 disparate and disconnected systems from local hard drives to shared networks, but has no way to centrally govern all of them, requiring considerable manhours for tasks like assessing when parts may need to be replaced". In simple terms, the missiles are so old that there's simply no way to integrate them digitally.
